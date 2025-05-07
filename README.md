@@ -1,36 +1,40 @@
 # v2x_feature_forecasting
 
-#modified repository of Opencood: https://github.com/DerrickXuNu/OpenCOOD
+modified repository of Opencood: https://github.com/DerrickXuNu/OpenCOOD
 For the details, follow that repo!
 
 modified files (that this repo is using):
+
 opencood/models/point_pillar_transformer.py
 opencood/models/sub_models/delay_*.py  (modules to forecast the features for delay solving)
 opencood/models/sub_models/loss/point_pillar_loss.py
 opencood/data_utils/datasets/data_utils/intermediate_fusion_dataset.py
 opencood/data_utils/datasets/data_utils/basedataset.py
-
 opencood/tools/inference_utils.py
 opencood/tools/train_utils.py
 
-
-0. Install the environment using the guide in installation.sh (work in )
+GUIDE TO USE THIS REPO:
+0. Install the environment using the guide in installation.sh (work in heisenberg workstation)
 
 1. Dataset Preparation
 following the guide in https://github.com/DerrickXuNu/v2x-vit?tab=readme-ov-file, section Data
-url to download data: https://ucla.app.box.com/v/UCLA-MobilityLab-V2XVIT
+url to download data: https://ucla.app.box.com/v/UCLA-MobilityLab-V2XVIT.
+If you are connected with equilibrium, the data are in '/equilibrium/datasets/V2X/v2xset/'
 
-2. Extract the feature to avoid to compute each time during the experiment using run_feature_pipeline.py
-
-2_bis. Get the feature from disk in ('/equilibrium/fmarchetti/v2x/OpenCOOD/FEATURE_SAVED/feature_saved_f2f_scenarioTS_agents_folders_2')
+2. Feature extraction
+Extract the feature to avoid to compute each time during the experiment using run_feature_pipeline.py.
+If you are connected with equilibrium, get the feature from disk in ('/equilibrium/fmarchetti/v2x/OpenCOOD/FEATURE_SAVED/feature_saved_f2f_scenarioTS_agents_folders_2')
 
 3. Set your w&b account to log the experiment
 
-4. Train the model with delay module using run_train.sh (tha train script is opencood/tools/train_feature.py)
-change "root_dir" and "validate_dir" in MODEL_v2xset/v2x-vit/config_training.yaml, specify where is your dataset
+4. TRANINNG
+Train the model with delay module using run_train.sh (tha train script is opencood/tools/train_feature.py).
+This is a finetuning phase, we start from the pretrained model provided by the authors of the v2x-vit model.
+Change "root_dir" and "validate_dir" in MODEL_v2xset/v2x-vit/config_training.yaml if you are not using equilibrium, specify where is your dataset.
 
-5. Get results of specific split (train/val/test) using run_test.py (the evaluation script is opencood/tools/inference.py)
-change root_dir in MODEL_v2xset/v2x-vit/config_evaluation.yaml, specify where is your dataset
+5. EVALUATION
+Get results of specific split (train/val/test) using run_test.py (the evaluation script is opencood/tools/inference.py)
+change root_dir in MODEL_v2xset/v2x-vit/config_evaluation.yaml if you are not using equilibrium, specify where is your dataset.
 
 
 
