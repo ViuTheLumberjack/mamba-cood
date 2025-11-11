@@ -46,7 +46,7 @@ class IntermediateFusionDataset(basedataset.BaseDataset):
         
         self.split_dataset = params['split_dataset']
         # self.len_past = params['len_past']
-        self.len_past = params['len_past']
+        self.len_past = int(params['len_past'])
 
 
         # whether there is a time delay between the time that cav project

@@ -196,8 +196,8 @@ preprocess:
   core_method: SpVoxelPreprocessor
 root_dir: '/equilibrium/datasets/V2X/v2xset/train'
 train_params:
-  batch_size: 2
-  epoches: 90
+  batch_size: 1
+  epoches: 120
   eval_freq: 1
   max_cav: 5
   save_freq: 1

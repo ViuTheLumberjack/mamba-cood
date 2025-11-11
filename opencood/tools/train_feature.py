@@ -30,7 +30,7 @@ import numpy as np
 def train_parser():
     parser = argparse.ArgumentParser(description="synthetic data generation")
     parser.add_argument("--hypes_yaml", type=str, default='opencood/hypes_yaml/point_pillar_v2xvit_delay.yaml', help='data generation yaml file needed ')
-    parser.add_argument('--model_dir', default='MODEL_v2xset/v2x-vit', help='Continued training path')
+    parser.add_argument('--model_dir',  help='Continued training path')
     parser.add_argument('--name_yaml', default='config_training.yaml', help='name of yaml with parameters to train')
     parser.add_argument("--half", action='store_true', default=True, help="whether train with half precision.")
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
@@ -223,7 +223,6 @@ def main():
     num_steps = len(train_loader)
     scheduler = train_utils.setup_lr_schedular(hypes, optimizer, num_steps)
 
-
     info_name = opt.info
     # dict_args = vars(self.args)
     wandb.init(project='opencood', notes="", name=info_name, save_code=True, mode=mode_wandb, config=hypes)
@@ -237,7 +236,7 @@ def main():
 
     # half precision training
     if opt.half:
-        scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.amp.GradScaler('cuda')
 
     print('Training start')
     epoches = hypes['train_params']['epoches']
@@ -304,7 +303,7 @@ def main():
                     final_loss = criterion(ouput_dict, batch_data['ego']['label_dict'])
                     # final_loss = criterion(ouput_dict, batch_data) 
                 else:
-                    with torch.cuda.amp.autocast():
+                    with torch.amp.autocast('cuda'):
                         ouput_dict = model.forward_feature_wo_backbone(batch_data['ego'])
                         final_loss = criterion(ouput_dict, batch_data) 
                 

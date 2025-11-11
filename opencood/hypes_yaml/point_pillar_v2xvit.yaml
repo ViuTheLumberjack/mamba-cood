@@ -81,7 +81,7 @@ model:
     lidar_range: *cav_lidar
     anchor_number: *achor_num
     max_cav: *max_cav
-    compression: 0 # compression rate
+    compression: 32 # compression rate
     backbone_fix: false
 
     pillar_vfe:

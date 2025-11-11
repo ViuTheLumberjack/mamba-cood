@@ -15,7 +15,8 @@ from opencood.models.sub_modules.delay_film import FeatureModifier
 from opencood.models.sub_modules.delay_local_att import AttentionBasedModifier
 from opencood.models.sub_modules.delay_uTransformer import UTransformerModifier
 # from opencood.models.sub_modules.delay_convlstm import FutureFramePredictor
-from opencood.models.sub_modules.delay_3dcnn import FutureFramePredictor
+# from opencood.models.sub_modules.delay_3dcnn import FutureFramePredictor
+from opencood.models.sub_modules.delay_simple_mamba import FutureFramePredictor
 # from opencood.models.sub_modules.delay_f2f import FutureFramePredictor
 # from opencood.models.sub_modules.delay_timesformer_style import FutureFramePredictor
 # from opencood.models.sub_modules.delay_transformer import FutureFramePredictor
