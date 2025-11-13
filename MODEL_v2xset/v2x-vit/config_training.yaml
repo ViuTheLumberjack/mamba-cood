@@ -200,7 +200,7 @@ train_params:
   epoches: 120
   eval_freq: 1
   max_cav: 5
-  save_freq: 1
+  save_freq: 5
 # validate_dir: '/equilibrium/datasets/V2X/v2xset/test'
 validate_dir: '/equilibrium/datasets/V2X/v2xset/validate'
 wild_setting:
