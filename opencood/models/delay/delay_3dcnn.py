@@ -44,8 +44,11 @@ class CNN3D(nn.Module):
 # Full Model: Predict Future Feature Map
 # -------------------------------
 class FutureFramePredictor(nn.Module):
-    def __init__(self, input_channels=8, hidden_dim=64, kernel_size=(3, 3, 3), num_layers=3):
+    def __init__(self, args) :#input_channels=8, hidden_dim=64, kernel_size=(3, 3, 3), num_layers=3):
         super().__init__()
+        input_channels = args.get('input_channels', 8)
+        hidden_dim = args.get('hidden_dim', 64)
+        num_layers = args.get('num_layers', 3)
         self.encoder = CNN3D(input_channels, hidden_dim, num_layers)
         self.conv2d_decoder = nn.Conv2d(hidden_dim, input_channels, kernel_size=1)
 
@@ -66,7 +69,7 @@ class FutureFramePredictor(nn.Module):
 # -------------------------------
 if __name__ == "__main__":
     B, T, C, H, W = 2, 5, 8, 48, 176  # Batch, Time, Channels, Height, Width
-    model = FutureFramePredictor(input_channels=C)
+    model = FutureFramePredictor({'input_channels': C})
     
     x = torch.randn(B, T, C, H, W)  # Dummy input
     output = model(x)

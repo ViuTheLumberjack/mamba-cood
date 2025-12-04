@@ -111,7 +111,6 @@ def show_pred_gt(output_dict, batch_data, global_iteration):
 
         for col in range(3):
             ax = axes[row, col]
-            # ax.imshow(np.random.rand(H, W), cmap='viridis') 
             ax.imshow(images[col][row], cmap='viridis')
 
             min_value = images[col][row].min().item()
@@ -146,7 +145,7 @@ def main():
         mode_wandb = 'disabled'
         num_workers = 0
     else:
-        num_workers = 8
+        num_workers = 16
         mode_wandb = 'online'
 
     # #create folder in os.path.join(saved_path, 'prova'
@@ -173,7 +172,7 @@ def main():
         val_loader = DataLoader(opencood_validate_dataset,
                                 sampler=sampler_val,
                                 num_workers=num_workers,
-                                collate_fn=opencood_train_dataset.collate_batch_train,
+                                collate_fn=opencood_train_dataset.collate_batch_test,
                                 drop_last=False)
     else:
         train_loader = DataLoader(opencood_train_dataset,
@@ -184,9 +183,9 @@ def main():
                                   pin_memory=False,
                                   drop_last=True)
         val_loader = DataLoader(opencood_validate_dataset,
-                                batch_size=1, #hypes['train_params']['batch_size'],
+                                batch_size=1,
                                 num_workers=num_workers,    #
-                                collate_fn=opencood_train_dataset.collate_batch_train,
+                                collate_fn=opencood_train_dataset.collate_batch_test,
                                 shuffle=False,
                                 pin_memory=False,
                                 drop_last=True)
@@ -231,7 +230,6 @@ def main():
     wandb.define_metric("train/*", step_metric="it")
     wandb.define_metric("val/*", step_metric="epoch")
 
-
     ###########################################
 
     # half precision training
@@ -260,28 +258,18 @@ def main():
     for epoch in range(init_epoch, max(epoches, init_epoch)):
         print('epoch %d' % epoch)
         if first_epoch == False:
-            # todo: put the scheduler or not
-            # if hypes['lr_scheduler']['core_method'] != 'cosineannealwarm':
-            #     scheduler.step(epoch)
-            # if hypes['lr_scheduler']['core_method'] == 'cosineannealwarm':
-            #     scheduler.step_update(epoch * num_steps + 0)
-            for param_group in optimizer.param_groups:
-                print('learning rate %.7f' % param_group["lr"])
-
-            #wandb for lr
-            wandb.log({"lr": param_group["lr"], "epoch": epoch})
-
             if opt.distributed:
                 sampler_train.set_epoch(epoch)
+                
+            for param_group in optimizer.param_groups:
+                print('learning rate updated to %.7f' % param_group["lr"])
+            #wandb for lr
+            wandb.log({"lr": param_group["lr"], "epoch": epoch})
 
             pbar2 = tqdm.tqdm(total=len(train_loader), leave=True)
 
             model.train()
             for i, batch_data in tqdm.tqdm(enumerate(train_loader)):
-                #to try the training pipeline
-                # if i == 20:
-                #     break
-
                 print('step training %d' % i)
                 # the model will be evaluation mode during validation
 
@@ -331,19 +319,21 @@ def main():
                     scaler.step(optimizer)
                     scaler.update()
 
-                # todo: put the scheduler or not
-                # if hypes['lr_scheduler']['core_method'] == 'cosineannealwarm':
-                #     scheduler.step_update(epoch * num_steps + i)
+                if hypes['lr_scheduler']['core_method'] == 'cosineannealwarm':
+                    scheduler.step_update(epoch * num_steps + 0)
 
                 global_iteration += 1
+
+            if hypes['lr_scheduler']['core_method'] != 'cosineannealwarm':
+                scheduler.step()
+            if hypes['lr_scheduler']['core_method'] == 'cosineannealwarm':
+                scheduler.step_update(epoch * num_steps + 1)
 
         if epoch % hypes['train_params']['save_freq'] == 0:
             torch.save(model_without_ddp.state_dict(),
                 # os.path.join(saved_path, info, 'net_epoch%d.pth' % (epoch + 1)))
                 os.path.join(saved_path_dir, info, 'net_epoch%d.pth' % (epoch)))
             #save config files in local
-
-                
 
         if epoch % hypes['train_params']['eval_freq'] == 0:
             valid_ave_loss = []
@@ -356,8 +346,6 @@ def main():
 
             with torch.no_grad():
                 for i, batch_data in tqdm.tqdm(enumerate(val_loader)):
-                    # if i == 20:
-                    #     break
                     print('validation step %d' % i)
                     model.eval()
 

@@ -217,6 +217,7 @@ class IntermediateFusionDataset(basedataset.BaseDataset):
                 except:
                     current_features_i = torch.zeros(8, 48, 176)
 
+                # IMPORTANT: WHY ONLY FOR THE EGO WE DO NOT HAVE PAST FEATURES???
                 if ego_i == True:
                     gt_features.append(current_features_i)
                     past_features.append(torch.zeros(self.len_past, 8, 48, 176))

@@ -10,22 +10,20 @@ from opencood.models.sub_modules.downsample_conv import DownsampleConv
 from opencood.models.sub_modules.naive_compress import NaiveCompressor
 from opencood.models.fuse_modules.v2xvit_basic import V2XTransformer
 
-from opencood.models.sub_modules.cnn_delay import DelayModule
-from opencood.models.sub_modules.delay_film import FeatureModifier
-from opencood.models.sub_modules.delay_local_att import AttentionBasedModifier
-from opencood.models.sub_modules.delay_uTransformer import UTransformerModifier
-# from opencood.models.sub_modules.delay_convlstm import FutureFramePredictor
-# from opencood.models.sub_modules.delay_3dcnn import FutureFramePredictor
-from opencood.models.sub_modules.delay_simple_mamba import FutureFramePredictor
-# from opencood.models.sub_modules.delay_f2f import FutureFramePredictor
-# from opencood.models.sub_modules.delay_timesformer_style import FutureFramePredictor
-# from opencood.models.sub_modules.delay_transformer import FutureFramePredictor
-
-
+# from opencood.models.delay.cnn_delay import DelayModule
+# from opencood.models.delay.delay_film import FeatureModifier
+# from opencood.models.delay.delay_local_att import AttentionBasedModifier
+# from opencood.models.delay.delay_uTransformer import UTransformerModifier
+# from opencood.models.delay.delay_convlstm import FutureFramePredictor
+# from opencood.models.delay.delay_3dcnn import FutureFramePredictor
+# from opencood.models.delay.delay_mamba import FutureFramePredictor
+# from opencood.models.delay.delay_f2f import FutureFramePredictor
+# from opencood.models.delay.delay_timesformer_style import FutureFramePredictor
+# from opencood.models.delay.delay_transformer import FutureFramePredictor
+import opencood.models.delay
 
 #module F
 import torch.nn.functional as F
-
 
 class PointPillarTransformer(nn.Module):
     def __init__(self, args):
@@ -62,10 +60,12 @@ class PointPillarTransformer(nn.Module):
         
         self.module_delay_flag = args['module_delay']
         if self.module_delay_flag:
-            self.module_delay = FutureFramePredictor()
+            self.module_delay = opencood.models.delay.build_delay_module(
+                args['delay']
+            )
 
         if args['backbone_fix']:
-            self.backbone_fix()
+            self.backbone_fix() 
 
     def backbone_fix(self):
         """
@@ -80,13 +80,12 @@ class PointPillarTransformer(nn.Module):
         for p in self.backbone.parameters():
             p.requires_grad = False
 
-        # todo, put finetuning
-        # if self.compression:
-        #     for p in self.naive_compressor.parameters():
-        #         p.requires_grad = False
-        # if self.shrink_flag:
-        #     for p in self.shrink_conv.parameters():
-        #         p.requires_grad = False
+        if self.compression:
+            for p in self.naive_compressor.parameters():
+                p.requires_grad = False
+        if self.shrink_flag:
+            for p in self.shrink_conv.parameters():
+                p.requires_grad = False
 
         # todo, put finetuning
         if self.freeze_heads:
@@ -122,7 +121,7 @@ class PointPillarTransformer(nn.Module):
             feature_encoded = self.module_delay(total_feature)
 
             # IMP2: residual
-            # feature_encoded = feature_encoded + feature_saved
+            feature_encoded = feature_encoded + feature_saved
 
             # if inference:
             #     ego_list = torch.Tensor(data_dict['ego_list'][0]).bool()

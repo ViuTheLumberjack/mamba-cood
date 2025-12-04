@@ -25,7 +25,7 @@ def test_parser():
     parser = argparse.ArgumentParser(description="synthetic data generation")
     parser.add_argument('--model_dir', type=str, default='MODEL_v2xset/v2x-vit',
                         help='Continued training path')
-    parser.add_argument('--name_yaml', default='config_evaluation.yaml',
+    parser.add_argument('--name_yaml', default=None,
                 help='Continued training path')
     parser.add_argument('--fusion_method', type=str,
                         default='intermediate',
@@ -89,6 +89,10 @@ def main():
         hypes['validate_dir'] = '/equilibrium/datasets/V2X/v2xset/train'
 
     # check if the code is runing with debug mode
+    if sys.gettrace() is not None:
+        num_workers = 0
+    else:
+        num_workers = 16
 
     print('Dataset Building')
     opencood_dataset = build_dataset(hypes, visualize=True, train=False)
@@ -96,9 +100,9 @@ def main():
     print(f"{len(opencood_dataset)} samples found.")
     data_loader = DataLoader(opencood_dataset,
                              batch_size=1,
-                             num_workers=8,
-                             collate_fn=opencood_dataset.collate_batch_train,     #collate_batch_train, collate_batch_test
-                             shuffle=False,  #todo: cambiare
+                             num_workers=num_workers,
+                             collate_fn=opencood_dataset.collate_batch_test,
+                             shuffle=False, 
                              pin_memory=False,
                              drop_last=True)
 

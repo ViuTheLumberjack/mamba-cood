@@ -10,7 +10,7 @@ from opencood.models.sub_modules.downsample_conv import DownsampleConv
 from opencood.models.sub_modules.naive_compress import NaiveCompressor
 from opencood.models.fuse_modules.v2xvit_basic import V2XTransformer
 
-from opencood.models.sub_modules.cnn_delay import DelayModule
+from opencood.models.delay.cnn_delay import DelayModule
 
 # U-Net Architecture for Feature Maps [B, 256, 48, 176]
 class UNet(nn.Module):
