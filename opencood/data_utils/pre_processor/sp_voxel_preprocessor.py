@@ -123,21 +123,44 @@ class SpVoxelPreprocessor(BasePreprocessor):
         voxel_coords = []
 
         for i in range(len(batch)):
-            voxel_features.append(batch[i]['voxel_features'])
-            voxel_num_points.append(batch[i]['voxel_num_points'])
-            coords = batch[i]['voxel_coords']
-            voxel_coords.append(
-                np.pad(coords, ((0, 0), (1, 0)),
-                       mode='constant', constant_values=i))
+            batch_voxel_features = batch[i]['voxel_features']
+            batch_voxel_num_points = batch[i]['voxel_num_points']
+            batch_coords = batch[i]['voxel_coords']
+            
+            # Handle multiple vehicles in this batch item
+            if isinstance(batch_coords, (list, tuple)) or (isinstance(batch_coords, np.ndarray) and batch_coords.dtype == object):
+                # Multiple vehicles - iterate over each vehicle
+                for vehicle_coords in batch_coords:
+                    vehicle_coords = np.asarray(vehicle_coords)
+                    voxel_coords.append(
+                        np.pad(vehicle_coords, ((0, 0), (1, 0)),
+                            mode='constant', constant_values=i))
+            else:
+                # Single vehicle or already proper array
+                batch_coords = np.asarray(batch_coords)
+                voxel_coords.append(
+                    np.pad(batch_coords, ((0, 0), (1, 0)),
+                        mode='constant', constant_values=i))
+            
+            # Handle voxel_features and voxel_num_points similarly if they have the same structure
+            if isinstance(batch_voxel_features, (list, tuple)) or (isinstance(batch_voxel_features, np.ndarray) and batch_voxel_features.dtype == object):
+                voxel_features.extend(batch_voxel_features)
+            else:
+                voxel_features.append(batch_voxel_features)
+            
+            if isinstance(batch_voxel_num_points, (list, tuple)) or (isinstance(batch_voxel_num_points, np.ndarray) and batch_voxel_num_points.dtype == object):
+                voxel_num_points.extend(batch_voxel_num_points)
+            else:
+                voxel_num_points.append(batch_voxel_num_points)
 
-        voxel_num_points = torch.from_numpy(np.concatenate(voxel_num_points))
-        voxel_features = torch.from_numpy(np.concatenate(voxel_features))
-        voxel_coords = torch.from_numpy(np.concatenate(voxel_coords))
+        voxel_num_points = torch.from_numpy(np.concatenate(voxel_num_points, axis=0))
+        voxel_features = torch.from_numpy(np.concatenate(voxel_features, axis=0))
+        voxel_coords = torch.from_numpy(np.concatenate(voxel_coords, axis=0))
 
         return {'voxel_features': voxel_features,
                 'voxel_coords': voxel_coords,
                 'voxel_num_points': voxel_num_points}
-
+    
     @staticmethod
     def collate_batch_dict(batch: dict):
         """

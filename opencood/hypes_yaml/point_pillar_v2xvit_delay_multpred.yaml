@@ -5,7 +5,7 @@ validate_dir: '/equilibrium/datasets/V2X/v2xset/validate'
 wild_setting:
   async: false
   async_mode: 'sim'
-  async_overhead: 100
+  async_overhead: &future_delay 100
   seed: 25
   loc_err: false
   xyz_std: 0.2
@@ -13,6 +13,14 @@ wild_setting:
   data_size: 1.06 # Mb!!
   transmission_speed: 27 # Mbps!!
   backbone_delay: 10 # ms
+
+delay:
+  future_delay: *future_delay  # ms
+  future_delay_list: 
+    - 100
+    - 200
+    - 300
+    - 400
 
 yaml_parser: "load_point_pillar_params"
 train_params:
@@ -144,6 +152,12 @@ model:
 
     delay:
       core_method: Mamba
+      future_delay: *future_delay  # ms
+      future_delay_list: 
+        - 100
+        - 200
+        - 300
+        - 400   # ms
       args:
         input_channels: 8
         height: 48

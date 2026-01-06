@@ -61,6 +61,7 @@ class BaseDataset(Dataset):
         self.params = params
         self.visualize = visualize
         self.train = train
+        self.extract = params.get('extract', False)
 
         self.pre_processor = None
         self.post_processor = None
@@ -220,7 +221,6 @@ class BaseDataset(Dataset):
         # we loop the accumulated length list to see get the scenario index
         scenario_index = 0
         for i, ele in enumerate(self.len_record):
-
             if idx < ele:
                 scenario_index = i
                 break
@@ -232,8 +232,6 @@ class BaseDataset(Dataset):
         timestamp_key = self.return_timestamp_key(scenario_database, timestamp_index)
         # calculate distance to ego for each cav
         ego_cav_content = self.calc_dist_to_ego(scenario_database, timestamp_key)
-
-
 
         data = OrderedDict()
 

@@ -288,7 +288,7 @@ def main():
                     ouput_dict = model.forward_feature_wo_backbone(batch_data['ego'])
                     # first argument is always your output dictionary,
                     # second argument is always your label dictionary.
-                    final_loss = criterion(ouput_dict, batch_data['ego']['label_dict'])
+                    final_loss = criterion(ouput_dict, batch_data)
                     # final_loss = criterion(ouput_dict, batch_data) 
                 else:
                     with torch.amp.autocast('cuda'):
@@ -305,8 +305,8 @@ def main():
                 wandb.log({"train/reg_loss": reg_loss.item(), "it": global_iteration})
 
                 #show in wandb the 2d feature maps: current -> pred - gt
-                if global_iteration % 20 == 0:
-                    show_pred_gt(ouput_dict, batch_data, global_iteration)
+                #if global_iteration % 20 == 0:
+                    #show_pred_gt(ouput_dict, batch_data, global_iteration)
 
                 criterion.logging(epoch, i, len(train_loader), pbar=pbar2)
                 pbar2.update(1)

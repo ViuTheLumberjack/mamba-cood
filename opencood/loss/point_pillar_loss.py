@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from einops import einops
 
 
 class WeightedSmoothL1Loss(nn.Module):
@@ -81,10 +82,39 @@ class PointPillarLoss(nn.Module):
 
         self.cls_weight = args['cls_weight']
         self.reg_coe = args['reg']
+        self.delay_beta = args['delay']
         self.loss_dict = {}
 
-    def l1_loss(self, output, target):
-        return F.l1_loss(output, target, reduction='none')
+    def delay_loss(self, output, target):
+        """
+        Parameters
+        ----------
+        output : torch.Tensor size (T, B, C, H, W)
+        target : torch.Tensor size (T, B, C, H, W)
+
+        Returns
+        -------
+        loss : float
+        """
+        #return F.l1_loss(output, target, reduction='none')
+        return F.huber_loss(output, target, reduction='none', delta=self.delay_beta)
+        # Charbonnier loss
+        def charbonnier_loss(x, epsilon=1e-6):
+            return torch.sqrt(x * x + epsilon)
+        
+        diff = output - target
+        loss = charbonnier_loss(diff, self.delay_beta)
+
+        def cosine_similarity_loss(x: torch.Tensor, y: torch.Tensor):
+            # T, C, H, W = x.shape
+            x_flat = einops.rearrange(x, 't c h w -> t (c h w)')
+            y_flat = einops.rearrange(y, 't c h w -> t (c h w)')
+
+            cos = F.cosine_similarity(x_flat, y_flat, dim=1, eps=1e-6)
+            cos = 1 - cos
+            return cos 
+        
+        return loss #cosine_similarity_loss(output, target)
 
     def forward(self, output_dict, target_dict):
         """
@@ -93,14 +123,15 @@ class PointPillarLoss(nn.Module):
         output_dict : dict
         target_dict : dict
         """
-        rm = output_dict['rm']
-        psm = output_dict['psm']
+        rm_list = output_dict['rm']
+        psm_list = output_dict['psm']
         target_dict_copy = target_dict.copy()
         target_dict = target_dict['ego']['label_dict']
         targets = target_dict['targets']
 
         #added loss
         feature_pred = output_dict['feature_output']
+        predictions = output_dict['predictions']
         feature_gt = target_dict_copy['ego']['gt_features']
         record_len = target_dict_copy['ego']['record_len']
         ego_list = target_dict_copy['ego']['ego_list']
@@ -112,89 +143,81 @@ class PointPillarLoss(nn.Module):
                 #from 0 to 1, and from 1 to 0
                 ego_flag = torch.where(ego_flag == 0, 1, 0)
 
-                pred = feature_pred[i, :record_len[i]]
-                gt = feature_gt[i, :record_len[i]]
+                pred = predictions[:, i, :record_len[i]]
+                gt = feature_gt[:, i, :record_len[i]]
 
-                loss_l1 = self.l1_loss(pred, gt)
+                delay_loss = self.delay_loss(pred, gt)
 
-                ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).repeat(1, loss_l1.shape[1], loss_l1.shape[2]).cuda()
+                ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).unsqueeze(0).repeat(delay_loss.shape[0], 1, delay_loss.shape[2], delay_loss.shape[3]).cuda()
+                # print(ego_flag.shape, delay_loss.shape)
 
                 try:
-                    loss_l1 = loss_l1 * ego_flag
+                    delay_loss = delay_loss * ego_flag
                 except:
                     print('error in l1 loss')
-                loss_l1 = loss_l1.sum() / (ego_flag.sum() + 1e-6)
+                delay_loss = delay_loss.sum() / (ego_flag.sum() + 1e-6)
 
-                loss += loss_l1
+                loss += delay_loss
 
-                # # L1 loss
-                # try:
-
-                # except:
-                #     print('error in l1 loss')
-                #     loss += torch.zeros(1).cuda()
-
-                # loss += self.local_mask(base, pred, gt)
-                # loss += self.l1_loss(pred, gt)
-                # loss += self.l1_ssim(base, pred, gt)
-                # loss += 1 - ssim(pred, gt, data_range=gt.max(), size_average=True)
-                # loss += self.aggressive_ssim_loss(pred, gt, alpha=1.0)
             loss = loss / len(record_len)
         else:
             loss = torch.zeros(1).cuda()
 
-
         if self.args['freeze_heads'] == False:
-            cls_preds = psm.permute(0, 2, 3, 1).contiguous()
+            conf_loss = 0
+            for psm in psm_list:
+                cls_preds = psm.permute(0, 2, 3, 1).contiguous()
 
-            box_cls_labels = target_dict['pos_equal_one']
-            box_cls_labels = box_cls_labels.view(psm.shape[0], -1).contiguous()
+                box_cls_labels = target_dict['pos_equal_one']
+                box_cls_labels = box_cls_labels.view(psm.shape[0], -1).contiguous()
 
-            positives = box_cls_labels > 0
-            negatives = box_cls_labels == 0
-            negative_cls_weights = negatives * 1.0
-            cls_weights = (negative_cls_weights + 1.0 * positives).float()
-            reg_weights = positives.float()
+                positives = box_cls_labels > 0
+                negatives = box_cls_labels == 0
+                negative_cls_weights = negatives * 1.0
+                cls_weights = (negative_cls_weights + 1.0 * positives).float()
+                reg_weights = positives.float()
 
-            pos_normalizer = positives.sum(1, keepdim=True).float()
-            reg_weights /= torch.clamp(pos_normalizer, min=1.0)
-            cls_weights /= torch.clamp(pos_normalizer, min=1.0)
-            cls_targets = box_cls_labels
-            cls_targets = cls_targets.unsqueeze(dim=-1)
+                pos_normalizer = positives.sum(1, keepdim=True).float()
+                reg_weights /= torch.clamp(pos_normalizer, min=1.0)
+                cls_weights /= torch.clamp(pos_normalizer, min=1.0)
+                cls_targets = box_cls_labels
+                cls_targets = cls_targets.unsqueeze(dim=-1)
 
-            cls_targets = cls_targets.squeeze(dim=-1)
-            one_hot_targets = torch.zeros(
-                *list(cls_targets.shape), 2,
-                dtype=cls_preds.dtype, device=cls_targets.device
-            )
-            one_hot_targets.scatter_(-1, cls_targets.unsqueeze(dim=-1).long(), 1.0)
-            cls_preds = cls_preds.view(psm.shape[0], -1, 1)
-            one_hot_targets = one_hot_targets[..., 1:]
+                cls_targets = cls_targets.squeeze(dim=-1)
+                one_hot_targets = torch.zeros(
+                    *list(cls_targets.shape), 2,
+                    dtype=cls_preds.dtype, device=cls_targets.device
+                )
+                one_hot_targets.scatter_(-1, cls_targets.unsqueeze(dim=-1).long(), 1.0)
+                cls_preds = cls_preds.view(psm.shape[0], -1, 1)
+                one_hot_targets = one_hot_targets[..., 1:]
 
-            cls_loss_src = self.cls_loss_func(cls_preds,
-                                            one_hot_targets,
-                                            weights=cls_weights)  # [N, M]
-            cls_loss = cls_loss_src.sum() / psm.shape[0]
-            conf_loss = cls_loss * self.cls_weight
+                cls_loss_src = self.cls_loss_func(cls_preds,
+                                                one_hot_targets,
+                                                weights=cls_weights)  # [N, M]
+                cls_loss = cls_loss_src.sum() / psm.shape[0]
+                conf_loss += cls_loss * self.cls_weight
 
-            # regression
-            rm = rm.permute(0, 2, 3, 1).contiguous()
-            rm = rm.view(rm.size(0), -1, 7)
-            targets = targets.view(targets.size(0), -1, 7)
-            box_preds_sin, reg_targets_sin = self.add_sin_difference(rm,
-                                                                    targets)
-            loc_loss_src =\
-                self.reg_loss_func(box_preds_sin,
-                                reg_targets_sin,
-                                weights=reg_weights)
-            reg_loss = loc_loss_src.sum() / rm.shape[0]
-            reg_loss *= self.reg_coe
+            reg_loss = 0
+            for rm in rm_list:
+                # regression
+                rm = rm.permute(0, 2, 3, 1).contiguous()
+                rm = rm.view(rm.size(0), -1, 7)
+                targets = targets.view(targets.size(0), -1, 7)
+                box_preds_sin, reg_targets_sin = self.add_sin_difference(rm,
+                                                                        targets)
+                loc_loss_src =\
+                    self.reg_loss_func(box_preds_sin,
+                                    reg_targets_sin,
+                                    weights=reg_weights)
+                reg_loss_ = loc_loss_src.sum() / rm.shape[0]
+                reg_loss_ *= self.reg_coe
+                reg_loss += reg_loss_
 
             total_loss = reg_loss + conf_loss
 
-            #add:todo
-            if self.args['module_delay']:
-                total_loss += loss
+            #if False:
+            total_loss += loss
         else:
             total_loss = loss
             reg_loss = torch.zeros(1).cuda()

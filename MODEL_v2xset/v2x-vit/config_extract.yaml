@@ -1,4 +1,3 @@
-
 data_augment:
 - ALONG_AXIS_LIST:
   - x
@@ -197,12 +196,11 @@ preprocess:
 root_dir: '/equilibrium/datasets/V2X/v2xset/train'
 train_params:
   batch_size: 2
-  epoches: 70
+  epoches: 60
   eval_freq: 1
   max_cav: 5
   save_freq: 1
-validate_dir: '/equilibrium/datasets/V2X/v2xset/test'
-# validate_dir: '/equilibrium/datasets/V2X/v2xset/validate'
+validate_dir: '/equilibrium/datasets/V2X/v2xset/validate'
 wild_setting:
   async: false
   async_mode: 'sim'

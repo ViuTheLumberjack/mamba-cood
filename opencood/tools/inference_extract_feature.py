@@ -47,6 +47,8 @@ def test_parser():
                              'but would increase the tolerance for FP (False Positives).')
     parser.add_argument('--mode', type=str, default='no_feature')
     parser.add_argument('--split_dataset', type=str, default='train')
+    parser.add_argument('--len_past', type=int, default=0)
+    parser.add_argument('--freeze_heads', type=bool, default=True)
 
     opt = parser.parse_args()
     return opt
@@ -83,14 +85,19 @@ def main():
         print("split dataset: Test")
         opt.split_dataset = False
 
+    hypes['split_dataset'] = split_dataset
+    hypes['len_past'] = opt.len_past
+    hypes['freeze_heads'] = opt.freeze_heads
+    hypes['extract'] = True
+
     opencood_dataset = build_dataset(hypes, visualize=True, train=opt.split_dataset)
     print(f"{len(opencood_dataset)} samples found.")
 
     #todo
     start_index = 5032  # start from the middle
-    subset = Subset(opencood_dataset, list(range(start_index, len(opencood_dataset))))
+    #subset = Subset(opencood_dataset, list(range(start_index, len(opencood_dataset))))
     # dataloader = DataLoader(subset, batch_size=your_batch_size, shuffle=False)
-    data_loader = DataLoader(subset,
+    data_loader = DataLoader(opencood_dataset,
                             batch_size=1,
                             num_workers=num_workers,
                             collate_fn=opencood_dataset.collate_batch_test,
@@ -98,14 +105,6 @@ def main():
                             pin_memory=False,
                             drop_last=False)
 
-
-    # data_loader = DataLoader(opencood_dataset,
-    #                          batch_size=1,
-    #                          num_workers=num_workers,
-    #                          collate_fn=opencood_dataset.collate_batch_test,
-    #                          shuffle=False,
-    #                          pin_memory=False,
-    #                          drop_last=False)
     print('Creating Model')
     model = train_utils.create_model(hypes)
     # we assume gpu is necessary
@@ -121,7 +120,7 @@ def main():
     for i, batch_data in tqdm(enumerate(data_loader)):
         with torch.no_grad():
             batch_data = train_utils.to_device(batch_data, device)
-            output_dict = inference_utils.inference_intermediate_fusion_extract(batch_data, model, opencood_dataset, split_dataset)
+            _ = inference_utils.inference_intermediate_fusion_extract(batch_data, model, opencood_dataset, split_dataset)
 
 
 if __name__ == '__main__':

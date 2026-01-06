@@ -158,28 +158,25 @@ def eval_final_results(result_stat, save_path, global_sort_detections, get_resul
     ap_30, mrec_30, mpre_30 = calculate_ap(result_stat, 0.30, global_sort_detections)
     ap_50, mrec_50, mpre_50 = calculate_ap(result_stat, 0.50, global_sort_detections)
     ap_70, mrec_70, mpre_70 = calculate_ap(result_stat, 0.70, global_sort_detections)
-    output_file = name_file if not global_sort_detections else 'eval_global_sort.yaml'   
 
     if get_result:
         return ap_30, ap_50, ap_70
-    # else:
-    #     dump_dict.update({
-    #                     'details': 'provaaaa',
-    #                     'ap30': ap_30,
-    #                     'ap_50': ap_50,
-    #                     'ap_70': ap_70,
-    #                     'mpre_50': mpre_50,
-    #                     'mrec_50': mrec_50,
-    #                     'mpre_70': mpre_70,
-    #                     'mrec_70': mrec_70,
-    #                     })
+    else:
+        dump_dict.update({
+                        'ap30': ap_30,
+                        'mpre_30': mpre_30,
+                        'mrec_30': mrec_30,
+                        'ap_50': ap_50,
+                        'mpre_50': mpre_50,
+                        'mrec_50': mrec_50,
+                        'ap_70': ap_70,
+                        'mpre_70': mpre_70,
+                        'mrec_70': mrec_70,
+                        })
         
-    #     # if name_file is None:
-    #     #     name_file = 'eval.yaml'
-    #     # else:
-    #     #     name_file = name_file + 
-    #     output_file = name_file  + '.yaml' if not global_sort_detections else 'eval_global_sort.yaml'
-    #     yaml_utils.save_yaml(dump_dict, os.path.join(save_path, output_file))
+    name_file = 'eval' if name_file is None else name_file
+    output_file = name_file  + '.yaml' if not global_sort_detections else 'eval_global_sort.yaml'
+    yaml_utils.save_yaml(dump_dict, os.path.join(save_path, output_file))
 
     print('The Average Precision at IOU 0.3 is %.3f, '
         'The Average Precision at IOU 0.5 is %.3f, '

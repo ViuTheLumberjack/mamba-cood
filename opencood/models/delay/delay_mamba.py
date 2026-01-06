@@ -69,13 +69,17 @@ class MambaFutureFramePredictor(nn.Module):
         self.use_bidirectional = args.get('use_bidirectional', False)
         self.dropout_rate = args.get('dropout', 0.1)
 
+        self.prediction_horizon = args.get('future_delay', 0)
+        self.prediction_horizon_list = args.get('future_delay_list', [0])
+        self.prediction_horizon_idx = self.prediction_horizon_list.index(self.prediction_horizon)
+
         self.num_patches = (self.height // self.patch_size) * (self.width // self.patch_size)
         self.input_dim = self.input_channels * self.patch_size * self.patch_size
 
         # Patch embedding
         self.flatten = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
         self.embed = nn.Linear(self.input_dim, self.hidden_dim)
-        self.embed_norm = nn.LayerNorm(self.hidden_dim)
+        self.embed_norm = nn.RMSNorm(self.hidden_dim)
         self.embed_dropout = nn.Dropout(self.dropout_rate)
 
         self.pos_dropout = nn.Dropout(self.dropout_rate)
@@ -100,20 +104,45 @@ class MambaFutureFramePredictor(nn.Module):
             for _ in range(self.num_layers)
         ])
 
-        self.final_norm = nn.LayerNorm(self.hidden_dim)
+        self.final_norm = nn.RMSNorm(self.hidden_dim)
 
         # Reconstruction head
-        self.to_patch = nn.Sequential(
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.GELU(),
-            nn.Dropout(self.dropout_rate),
-            nn.Linear(self.hidden_dim, self.input_dim)
-        )
-        self.fold = nn.Fold(
-            output_size=(self.height, self.width), 
-            kernel_size=self.patch_size, 
-            stride=self.patch_size
-        )
+
+        print( "Prediction horizon list: ", self.prediction_horizon_list )
+
+        self.is_single_prediction_mode = True
+
+        if self.is_single_prediction_mode :#and len(self.prediction_horizon_list) == 1:
+            self.to_patch = nn.Sequential(
+                nn.Linear(self.hidden_dim, self.hidden_dim),
+                nn.GELU(),
+                nn.Dropout(self.dropout_rate),
+                nn.Linear(self.hidden_dim, self.input_dim)
+            )
+            self.fold = nn.Fold(
+                output_size=(self.height, self.width), 
+                kernel_size=self.patch_size, 
+                stride=self.patch_size
+            )
+        else:
+            self.reconstruction_heads = nn.ModuleList([
+                nn.Sequential(
+                    nn.Sequential(
+                        nn.Linear(self.hidden_dim, self.hidden_dim),
+                        nn.GELU(),
+                        nn.Dropout(self.dropout_rate),
+                        nn.Linear(self.hidden_dim, self.input_dim)
+                    ),
+                    Rearrange('b np pd -> b pd np'),
+                    nn.Fold(
+                        output_size=(self.height, self.width), 
+                        kernel_size=self.patch_size, 
+                        stride=self.patch_size
+                    )
+                )
+                for _ in range(len(args.get('future_delay_list', [0])))
+            ])
+        
 
     def patchify(self, x):
         """Convert frames to patches with embeddings"""
@@ -136,14 +165,13 @@ class MambaFutureFramePredictor(nn.Module):
         patches = self.pos_dropout(patches)
         return patches
 
-    def forward(self, x, return_intermediate=False):
+    def forward(self, x):
         """
         Args:
             x: [B, T, C, H, W] input frames
-            return_intermediate: if True, return all frame predictions
         
         Returns:
-            [B, C, H, W] predicted next frame (or [B, T_pred, C, H, W] if return_intermediate)
+            [B, T_preds, C, H, W] predicted next frame
         """
         B, T, C, H, W = x.shape
         
@@ -163,22 +191,32 @@ class MambaFutureFramePredictor(nn.Module):
             seq = block(seq)
         
         seq = self.final_norm(seq)
-        
-        # Extract prediction token output
-        pred_token_out = seq[:, -1:]  # [B, 1, hidden_dim]
-        
-        # Broadcast to all spatial positions
-        pred_patches = pred_token_out.expand(-1, self.num_patches, -1)
-        
-        # Or use the last frame tokens directly:
-        last_frame_tokens = seq[:, -(self.num_patches+1):-1]  # [B, num_patches, hidden_dim]
-        
+
+        # all_data = seq[:, -(self.num_patches * T + 1): -1]
+        # Use the last frame tokens directly for single prediction
+
         # Reconstruct patches
-        recon_patches = self.to_patch(last_frame_tokens)  # [B, num_patches, patch_dim]
-        recon_patches = einops.rearrange(recon_patches, 'b np pd -> b pd np')
-        recon_frame = self.fold(recon_patches)  # [B, C, H, W]
+        if len(self.prediction_horizon_list) == 1 and self.is_single_prediction_mode:
+            last_frame_tokens = seq[:, -(self.num_patches+1):-1]  # [B, num_patches, hidden_dim]
+            recon_patches = self.to_patch(last_frame_tokens)  # [B, num_patches, patch_dim]
+            recon_patches = einops.rearrange(recon_patches, 'b np pd -> b pd np')
+            preds = self.fold(recon_patches)  # [B, C, H, W]
+            feat_enc = preds
+        else:
+            # all_data = seq[:, -(self.num_patches * T + 1): -1]
+            #preds = torch.stack([ head(last_frame_tokens) for head in self.reconstruction_heads ])
+            preds = torch.stack([
+                self.fold(einops.rearrange(
+                    self.to_patch(seq[:, (self.num_patches * t):(self.num_patches * (t+1))]), 
+                    'b np pd -> b pd np'))
+                for t in range(1, T)
+            ])
+
+            idxs = [int(i / 100) - 1 for i in self.prediction_horizon_list]
+            preds = preds[idxs, :, :, :, :]  # [B, T_preds, C, H, W]
+            feat_enc = preds[self.prediction_horizon_idx]
         
-        return recon_frame
+        return feat_enc, preds
 
 
 class AutoregressivePredictor(MambaFutureFramePredictor):
@@ -202,7 +240,7 @@ class AutoregressivePredictor(MambaFutureFramePredictor):
         
         for _ in range(num_future_frames):
             # Predict next frame
-            next_frame = super().forward(current_input)  # [B, C, H, W]
+            next_frame: torch.Tensor = super().forward(current_input)  # [B, C, H, W]
             predictions.append(next_frame.unsqueeze(1))
             
             # Update input: remove oldest frame, add prediction
@@ -218,34 +256,29 @@ if __name__ == '__main__':
     B, T, C, H, W = 2, 5, 8, 48, 176
     x = torch.randn(B, T, C, H, W).to("cuda")
 
+    args = {
+        "input_channels":C,
+        "height":H,
+        "width":W,
+        "hidden_dim":512,
+        "patch_size":8,
+        "num_layers":6,
+        "d_state":64,
+        "d_conv":4, 
+        "use_bidirectional":True
+    }
+
     # Single frame prediction
-    model = MambaFutureFramePredictor(
-        t=T,
-        input_channels=C,
-        height=H,
-        width=W,
-        hidden_dim=512,
-        patch_size=8,
-        num_layers=6,
-        d_state=64,
-        d_conv=4, 
-        use_bidirectional=True
-    ).to("cuda")
+    model = MambaFutureFramePredictor(args).to("cuda")
     
     y = model(x)
     print(f"Input shape: {x.shape}")
-    print(f"Output shape: {y.shape}")
+    print(f"Output shape: {y[0].shape}")
     print(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     
     # Multi-frame autoregressive prediction
     auto_model = AutoregressivePredictor(
-        t=T,
-        input_channels=C,
-        height=H,
-        width=W,
-        hidden_dim=512,
-        patch_size=8,
-        num_layers=6
+        args
     ).to("cuda")
     
     y_multi = auto_model(x, num_future_frames=3)

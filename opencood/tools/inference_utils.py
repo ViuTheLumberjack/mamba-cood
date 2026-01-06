@@ -68,8 +68,14 @@ def inference_early_fusion(batch_data, model, dataset, forward_type='classic'):
     elif forward_type == 'wo_backbone':
         output_dict['ego'] = model.forward_feature_wo_backbone(cav_content, inference=False)
 
-
-    pred_box_tensor, pred_score, gt_box_tensor = dataset.post_process(batch_data, output_dict)
+    # here copy and take only last psm and rm, hence the one used for single prediction
+    output_dict_ = output_dict.copy()
+    output_dict_['ego'] = output_dict['ego'].copy()
+    # change the indexes based on which prediction we want to use
+    output_dict_['ego']['psm'] = output_dict['ego']['psm'][-1]
+    output_dict_['ego']['rm'] = output_dict['ego']['rm'][-1]
+    
+    pred_box_tensor, pred_score, gt_box_tensor = dataset.post_process(batch_data, output_dict_)
 
     return output_dict, pred_box_tensor, pred_score, gt_box_tensor
 
@@ -102,7 +108,7 @@ def inference_early_fusion_extract(batch_data, model, dataset, split_dataset):
     cav_total = batch_data['ego']['cav_total'][0]
 
     for i_cav, cav in enumerate(cav_total):
-        folder_path = f'FEATURE_SAVED/feature_saved_f2f_scenarioTS_agents_folders_2/{split_dataset}/{scenario_index}/{timestep}'
+        folder_path = f'FEATURE_SAVED2/feature_saved_f2f_scenarioTS_agents_folders_2/{split_dataset}/{scenario_index}/{timestep}'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
         try:
@@ -162,8 +168,6 @@ def inference_intermediate_fusion(batch_data, model, dataset, forward_type='clas
         The tensor of gt bounding box.
     """
     return inference_early_fusion(batch_data, model, dataset, forward_type)
-    # return inference_early_fusion_extract(batch_data, model, dataset)
-
 
 def inference_intermediate_fusion_extract(batch_data, model, dataset, split_dataset):
     """
