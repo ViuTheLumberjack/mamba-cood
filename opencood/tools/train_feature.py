@@ -57,8 +57,8 @@ def show_pred_gt(output_dict, batch_data, global_iteration):
     id_data =  batch_data['ego']['id_data'][choose_ex]
     feature_base = batch_data['ego']['current_features'][:record_len]
     # feature_residual = output_dict['feature_residual'][choose_ex][:record_len]
-    pred = output_dict['feature_output'][:record_len]
-    gt = batch_data['ego']['gt_features'][:record_len]
+    preds = output_dict['predictions'][:record_len]
+    gts = batch_data['ego']['gt_features'][:record_len]
     # mask = output_dict['mask'][choose_ex][:record_len]
     time_delay = batch_data['ego']['time_delay'][choose_ex][:record_len]
     infra = batch_data['ego']['infra'][choose_ex][:record_len]
@@ -71,63 +71,68 @@ def show_pred_gt(output_dict, batch_data, global_iteration):
         elif inf == 0:
             label_ag.append('av')
 
-    title_primary = f'example: {id_data}, {label_ag}'
-    titles_secondary = []
-    for i in range(record_len):
-        #round velocity in .3
-        titles_secondary.append(f'{label_ag[i]}, delay: {time_delay[i].item()}, vel: {round(velocity[i].item(),4)}')
-    #pad with 'padding' until 5
-    titles_secondary += ['padding'] * (5 - record_len)
+    for t in range(preds.shape[0]):
+        pred = preds[t]
+        gt = gts[t]
+        B, C, H, W = pred.shape
 
-    #create image, sum in channels
-    feature_base_image = feature_base.sum(1).detach().cpu()
-    # feature_residual_image = feature_residual.sum(1).detach().cpu()
-    pred_image = pred.sum(1).detach().cpu()
-    gt_image = gt.sum(1).detach().cpu()
+        title_primary = f'example: {id_data}, {label_ag}, time step: {t}'
+        titles_secondary = []
+        for i in range(record_len):
+            #round velocity in .3
+            titles_secondary.append(f'{label_ag[i]}, delay: {time_delay[i].item()}, vel: {round(velocity[i].item(),4)}')
+        #pad with 'padding' until 5
+        titles_secondary += ['padding'] * (5 - record_len)
 
-    #padding
-    feature_base_image = torch.cat([feature_base_image, torch.zeros(5 - record_len, feature_base_image.shape[1], feature_base_image.shape[2])], dim=0)
-    # feature_residual_image = torch.cat([feature_residual_image, torch.zeros(5 - record_len, feature_residual_image.shape[1], feature_residual_image.shape[2])], dim=0)
-    pred_image = torch.cat([pred_image, torch.zeros(5 - record_len, pred_image.shape[1], pred_image.shape[2])], dim=0)
-    gt_image = torch.cat([gt_image, torch.zeros(5 - record_len, gt_image.shape[1], gt_image.shape[2])], dim=0)
+        #create image, sum in channels
+        feature_base_image = feature_base.sum(1).detach().cpu()
+        # feature_residual_image = feature_residual.sum(1).detach().cpu()
+        pred_image = pred.sum(1).detach().cpu()
+        gt_image = gt.sum(1).detach().cpu()
+        
+        #padding
+        feature_base_image = torch.cat([feature_base_image, torch.zeros(5 - record_len, feature_base_image.shape[1], feature_base_image.shape[2])], dim=0)
+        # feature_residual_image = torch.cat([feature_residual_image, torch.zeros(5 - record_len, feature_residual_image.shape[1], feature_residual_image.shape[2])], dim=0)
+        pred_image = torch.cat([pred_image, torch.zeros(5 - record_len, H, W)], dim=0)
+        gt_image = torch.cat([gt_image, torch.zeros(5 - record_len, gt_image.shape[1], gt_image.shape[2])], dim=0)
 
-    # Constants
-    num_rows = 5  # Number of rows
-    H, W = feature_base_image.shape[1], feature_base_image.shape[2]  # Dimensions of each subplot (just for demo)
-    # titles = ["base", "residual", "pred", "gt"]
-    titles = ["base", "pred", "gt"]
+        # Constants
+        num_rows = 5  # Number of rows
+        H, W = feature_base_image.shape[1], feature_base_image.shape[2]  # Dimensions of each subplot (just for demo)
+        # titles = ["base", "residual", "pred", "gt"]
+        titles = ["base", "pred", "gt"]
 
-    # images = [feature_base_image, feature_residual_image, pred_image, gt_image]
-    images = [feature_base_image, pred_image, gt_image]
+        # images = [feature_base_image, feature_residual_image, pred_image, gt_image]
+        images = [feature_base_image, pred_image, gt_image]
 
 
-    # Create figure
-    fig, axes = plt.subplots(nrows=num_rows, ncols=3, figsize=(10, 10))
+        # Create figure
+        fig, axes = plt.subplots(nrows=num_rows, ncols=3, figsize=(10, 10))
 
-    # Set main title
-    fig.suptitle(title_primary, fontsize=16, fontweight='bold')
+        # Set main title
+        fig.suptitle(title_primary, fontsize=16, fontweight='bold')
 
-    for row in range(num_rows):
+        for row in range(num_rows):
 
-        for col in range(3):
-            ax = axes[row, col]
-            ax.imshow(images[col][row], cmap='viridis')
+            for col in range(3):
+                ax = axes[row, col]
+                ax.imshow(images[col][row], cmap='viridis')
 
-            min_value = images[col][row].min().item()
-            max_value = images[col][row].max().item()
+                min_value = images[col][row].min().item()
+                max_value = images[col][row].max().item()
 
-            title = titles[col] # Dummy image
-            title = f'{title} min:{min_value:.2f} max:{max_value:.2f}'
-            if title == 'gt':
-                title = f'{title}_{titles_secondary[row]}'
-            ax.set_title(title, fontsize=10)
-            ax.axis('off')  # Hide axes for clarity
+                title = titles[col] # Dummy image
+                title = f'{title} min:{min_value:.2f} max:{max_value:.2f}'
+                if title == 'gt':
+                    title = f'{title}_{titles_secondary[row]}'
+                ax.set_title(title, fontsize=10)
+                ax.axis('off')  # Hide axes for clarity
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to fit titles
+        plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to fit titles
 
-    #save in wandb
-    wandb.log({"train/images": [wandb.Image(plt)], "it": global_iteration})
-    plt.close()
+        #save in wandb
+        wandb.log({f"train/images/{t}": [wandb.Image(plt)], "it": global_iteration})
+        plt.close()
     
 
 def main():
@@ -242,7 +247,7 @@ def main():
 
     global_iteration = 0
     ap_70_best = 0.0
-    first_epoch = True
+    first_epoch = False
     #save opt parameters in local disk
     saved_path_dir = os.path.join(saved_path, 'TRAININGS')
     #create folder
@@ -305,8 +310,8 @@ def main():
                 wandb.log({"train/reg_loss": reg_loss.item(), "it": global_iteration})
 
                 #show in wandb the 2d feature maps: current -> pred - gt
-                #if global_iteration % 20 == 0:
-                    #show_pred_gt(ouput_dict, batch_data, global_iteration)
+                if global_iteration % 200 == 0:
+                    show_pred_gt(ouput_dict, batch_data, global_iteration)
 
                 criterion.logging(epoch, i, len(train_loader), pbar=pbar2)
                 pbar2.update(1)

@@ -59,23 +59,12 @@ def inference_early_fusion(batch_data, model, dataset, forward_type='classic'):
     output_dict = OrderedDict()
     cav_content = batch_data['ego']
 
-    # todo
-    # output_dict['ego'] = model.forward_feature(cav_content)
-    # output_dict['ego'] = model.forward_feature_wo_backbone(cav_content)
-
     if forward_type == 'classic':
         output_dict['ego'] = model(cav_content)
     elif forward_type == 'wo_backbone':
         output_dict['ego'] = model.forward_feature_wo_backbone(cav_content, inference=False)
-
-    # here copy and take only last psm and rm, hence the one used for single prediction
-    output_dict_ = output_dict.copy()
-    output_dict_['ego'] = output_dict['ego'].copy()
-    # change the indexes based on which prediction we want to use
-    output_dict_['ego']['psm'] = output_dict['ego']['psm'][-1]
-    output_dict_['ego']['rm'] = output_dict['ego']['rm'][-1]
     
-    pred_box_tensor, pred_score, gt_box_tensor = dataset.post_process(batch_data, output_dict_)
+    pred_box_tensor, pred_score, gt_box_tensor = dataset.post_process(batch_data, output_dict)
 
     return output_dict, pred_box_tensor, pred_score, gt_box_tensor
 

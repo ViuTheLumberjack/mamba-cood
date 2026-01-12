@@ -6,6 +6,7 @@
 #from opencood.models.delay.delay_convlstm import FutureFramePredictor
 from opencood.models.delay.delay_3dcnn import FutureFramePredictor
 from opencood.models.delay.delay_mamba import MambaFutureFramePredictor
+from opencood.models.delay.delay_multipred_mamba import MambaMultiPredictor
 #from opencood.models.delay.delay_f2f import FutureFramePredictor
 #from opencood.models.delay.delay_timesformer_style import FutureFramePredictor
 #from opencood.models.delay.delay_transformer import FutureFramePredictor
@@ -15,6 +16,7 @@ __all__ = {
     #'FiLM': FeatureModifier,
     '3DCNN': FutureFramePredictor,
     'Mamba': MambaFutureFramePredictor,
+    'MambaMultiPredictor': MambaMultiPredictor,
     # 'F2FDataset': F2FDataset
 }
 
@@ -23,7 +25,7 @@ def build_delay_module(delay_cfg):
     error_message = f"{delay_name} is not found. " \
                     f"Please add your delay module's name in opencood/" \
                     f"models/delay/__init__.py"
-    assert delay_name in ['3DCNN', 'Mamba'], error_message
+    assert delay_name in ['3DCNN', 'Mamba', 'MambaMultiPredictor'], error_message
 
     delay = __all__[delay_name](
         delay_cfg['args'],

@@ -67,7 +67,7 @@ class PointPillarTransformer(nn.Module):
             )
 
         # not enough memory
-        self.all_preds = True #len(args['delay']['args']['future_delay_list']) > 1
+        self.all_preds = False #len(args['delay']['args']['future_delay_list']) > 1
 
         if args['backbone_fix']:
             self.backbone_fix() 
@@ -114,7 +114,8 @@ class PointPillarTransformer(nn.Module):
 
         # read from saved feature
         feature_saved = data_dict['current_features']
-
+        
+        
         if self.module_delay_flag:
             past_feature = data_dict['past_features']    
             # concatenate along time dimension        
@@ -122,60 +123,35 @@ class PointPillarTransformer(nn.Module):
             
             # Use the future frame predictor
             feature_encoded, predictions = self.module_delay(total_feature)
-
-            # IMP2: residuals
-            predictions = predictions + feature_saved
-            feature_encoded = feature_encoded + feature_saved
+            
+            # IMP2: residuals, TODO: change me later
+            res = feature_saved
+            for t in range(predictions.shape[0]):
+                predictions[t] = predictions[t] + res
+                res = predictions[t] 
         else:
             feature_encoded = feature_saved
+            predictions = feature_encoded.unsqueeze(0)
 
-        if not self.all_preds:
-            spatial_features_2d = self.naive_compressor.decoder(feature_encoded)
-            regroup_feature, mask = regroup(spatial_features_2d, record_len, self.max_cav)
-            
-            # prior encoding added
-            prior_encoding_ = prior_encoding.repeat(1, 1, 1, regroup_feature.shape[3], regroup_feature.shape[4])
-            regroup_feature = torch.cat([regroup_feature, prior_encoding_], dim=2)
+        
+        spatial_features_2d = self.naive_compressor.decoder(feature_encoded)
+        regroup_feature, mask = regroup(spatial_features_2d, record_len, self.max_cav)
+        
+        # prior encoding added
+        prior_encoding_ = prior_encoding.repeat(1, 1, 1, regroup_feature.shape[3], regroup_feature.shape[4])
+        regroup_feature = torch.cat([regroup_feature, prior_encoding_], dim=2)
 
-            # b l c h w -> b l h w c 
-            #[1, 5, 48, 176, 259]
-            regroup_feature = regroup_feature.permute(0, 1, 3, 4, 2)
-            # transformer fusion
-            fused_feature = self.fusion_net(regroup_feature, mask, spatial_correction_matrix)
-            # b h w c -> b c h w
-            fused_feature = fused_feature.permute(0, 3, 1, 2)
+        # b l c h w -> b l h w c 
+        #[1, 5, 48, 176, 259]
+        regroup_feature = regroup_feature.permute(0, 1, 3, 4, 2)
+        # transformer fusion
+        fused_feature = self.fusion_net(regroup_feature, mask, spatial_correction_matrix)
+        # b h w c -> b c h w
+        fused_feature = fused_feature.permute(0, 3, 1, 2)
 
-            psm = self.cls_head(fused_feature).unsqueeze(1)
-            rm = self.reg_head(fused_feature).unsqueeze(1)
-        else:
-            num_preds = predictions.shape[0]
-            
-            psm = []
-            rm = []
-            for i in range(num_preds):
-                # Process one prediction at a time
-                pred_i = predictions[i]  # (N, C, H, W)
+        psm = self.cls_head(fused_feature)
+        rm = self.reg_head(fused_feature)
                 
-                # Use checkpointing to save memory during backward
-                spatial_features_2d = checkpoint(
-                    self.naive_compressor.decoder, 
-                    pred_i, 
-                    use_reentrant=False
-                )
-                
-                # Checkpoint the heavy fusion processing
-                psm_i, rm_i = checkpoint(
-                    self._process_single_prediction,
-                    spatial_features_2d,
-                    record_len,
-                    prior_encoding,
-                    spatial_correction_matrix,
-                    use_reentrant=False
-                )
-                
-                psm.append(psm_i)
-                rm.append(rm_i)
-
         output_dict = {'psm': psm,
                     'rm': rm,
                     'feature_output': feature_encoded,

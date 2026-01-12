@@ -80,9 +80,10 @@ class PointPillarLoss(nn.Module):
         self.args = args
         self.freeze_heads = args['freeze_heads']
 
-        self.cls_weight = args['cls_weight']
-        self.reg_coe = args['reg']
+        self.cls_weight = args['cls_weight'] # lamda cls
+        self.reg_coe = args['reg'] # lamda reg
         self.delay_beta = args['delay']
+        self.delay_coeff = args.get('delay_coeff', 1.0) # lamda delay
         self.loss_dict = {}
 
     def delay_loss(self, output, target):
@@ -123,8 +124,8 @@ class PointPillarLoss(nn.Module):
         output_dict : dict
         target_dict : dict
         """
-        rm_list = output_dict['rm']
-        psm_list = output_dict['psm']
+        rm = output_dict['rm']
+        psm = output_dict['psm']
         target_dict_copy = target_dict.copy()
         target_dict = target_dict['ego']['label_dict']
         targets = target_dict['targets']
@@ -160,59 +161,59 @@ class PointPillarLoss(nn.Module):
                 loss += delay_loss
 
             loss = loss / len(record_len)
+            loss *= self.delay_coeff
         else:
             loss = torch.zeros(1).cuda()
 
         if self.args['freeze_heads'] == False:
             conf_loss = 0
-            for psm in psm_list:
-                cls_preds = psm.permute(0, 2, 3, 1).contiguous()
+            cls_preds = psm.permute(0, 2, 3, 1).contiguous()
 
-                box_cls_labels = target_dict['pos_equal_one']
-                box_cls_labels = box_cls_labels.view(psm.shape[0], -1).contiguous()
+            box_cls_labels = target_dict['pos_equal_one']
+            box_cls_labels = box_cls_labels.view(psm.shape[0], -1).contiguous()
 
-                positives = box_cls_labels > 0
-                negatives = box_cls_labels == 0
-                negative_cls_weights = negatives * 1.0
-                cls_weights = (negative_cls_weights + 1.0 * positives).float()
-                reg_weights = positives.float()
+            positives = box_cls_labels > 0
+            negatives = box_cls_labels == 0
+            negative_cls_weights = negatives * 1.0
+            cls_weights = (negative_cls_weights + 1.0 * positives).float()
+            reg_weights = positives.float()
 
-                pos_normalizer = positives.sum(1, keepdim=True).float()
-                reg_weights /= torch.clamp(pos_normalizer, min=1.0)
-                cls_weights /= torch.clamp(pos_normalizer, min=1.0)
-                cls_targets = box_cls_labels
-                cls_targets = cls_targets.unsqueeze(dim=-1)
+            pos_normalizer = positives.sum(1, keepdim=True).float()
+            reg_weights /= torch.clamp(pos_normalizer, min=1.0)
+            cls_weights /= torch.clamp(pos_normalizer, min=1.0)
+            cls_targets = box_cls_labels
+            cls_targets = cls_targets.unsqueeze(dim=-1)
 
-                cls_targets = cls_targets.squeeze(dim=-1)
-                one_hot_targets = torch.zeros(
-                    *list(cls_targets.shape), 2,
-                    dtype=cls_preds.dtype, device=cls_targets.device
-                )
-                one_hot_targets.scatter_(-1, cls_targets.unsqueeze(dim=-1).long(), 1.0)
-                cls_preds = cls_preds.view(psm.shape[0], -1, 1)
-                one_hot_targets = one_hot_targets[..., 1:]
+            cls_targets = cls_targets.squeeze(dim=-1)
+            one_hot_targets = torch.zeros(
+                *list(cls_targets.shape), 2,
+                dtype=cls_preds.dtype, device=cls_targets.device
+            )
+            one_hot_targets.scatter_(-1, cls_targets.unsqueeze(dim=-1).long(), 1.0)
+            cls_preds = cls_preds.view(psm.shape[0], -1, 1)
+            one_hot_targets = one_hot_targets[..., 1:]
 
-                cls_loss_src = self.cls_loss_func(cls_preds,
-                                                one_hot_targets,
-                                                weights=cls_weights)  # [N, M]
-                cls_loss = cls_loss_src.sum() / psm.shape[0]
-                conf_loss += cls_loss * self.cls_weight
+            cls_loss_src = self.cls_loss_func(cls_preds,
+                                            one_hot_targets,
+                                            weights=cls_weights)  # [N, M]
+            cls_loss = cls_loss_src.sum() / psm.shape[0]
+            conf_loss += cls_loss * self.cls_weight
 
             reg_loss = 0
-            for rm in rm_list:
-                # regression
-                rm = rm.permute(0, 2, 3, 1).contiguous()
-                rm = rm.view(rm.size(0), -1, 7)
-                targets = targets.view(targets.size(0), -1, 7)
-                box_preds_sin, reg_targets_sin = self.add_sin_difference(rm,
-                                                                        targets)
-                loc_loss_src =\
-                    self.reg_loss_func(box_preds_sin,
-                                    reg_targets_sin,
-                                    weights=reg_weights)
-                reg_loss_ = loc_loss_src.sum() / rm.shape[0]
-                reg_loss_ *= self.reg_coe
-                reg_loss += reg_loss_
+        
+            # regression
+            rm = rm.permute(0, 2, 3, 1).contiguous()
+            rm = rm.view(rm.size(0), -1, 7)
+            targets = targets.view(targets.size(0), -1, 7)
+            box_preds_sin, reg_targets_sin = self.add_sin_difference(rm,
+                                                                    targets)
+            loc_loss_src =\
+                self.reg_loss_func(box_preds_sin,
+                                reg_targets_sin,
+                                weights=reg_weights)
+            reg_loss_ = loc_loss_src.sum() / rm.shape[0]
+            reg_loss_ *= self.reg_coe
+            reg_loss += reg_loss_
 
             total_loss = reg_loss + conf_loss
 
@@ -226,7 +227,10 @@ class PointPillarLoss(nn.Module):
         self.loss_dict.update({'total_loss': total_loss,
                                'reg_loss': reg_loss,
                                'conf_loss': conf_loss,
-                               'loss_feature': loss})
+                               'loss_feature': loss, 
+                               'predictions_mean': predictions.mean(),
+                               'predictions_std': predictions.std()
+                               })
 
         return total_loss
 
@@ -315,16 +319,20 @@ class PointPillarLoss(nn.Module):
         total_loss = self.loss_dict['total_loss']
         reg_loss = self.loss_dict['reg_loss']
         conf_loss = self.loss_dict['conf_loss']
+        mu = self.loss_dict['predictions_mean']
+        std = self.loss_dict['predictions_std']
         if pbar is None:
             print("[epoch %d][%d/%d], || Loss: %.4f || Conf Loss: %.4f"
-                " || Loc Loss: %.4f" % (
+                " || Loc Loss: %.4f || %.4f - %.4f" % (
                     epoch, batch_id + 1, batch_len,
-                    total_loss.item(), conf_loss.item(), reg_loss.item()))
+                    total_loss.item(), conf_loss.item(), reg_loss.item(),
+                    mu.item(), std.item()))
         else:
             pbar.set_description("[epoch %d][%d/%d], || Loss: %.4f || Conf Loss: %.4f"
-                  " || Loc Loss: %.4f" % (
+                  " || Loc Loss: %.4f || %.4f - %.4f" % (
                       epoch, batch_id + 1, batch_len,
-                      total_loss.item(), conf_loss.item(), reg_loss.item()))
+                      total_loss.item(), conf_loss.item(), reg_loss.item(),
+                      mu.item(), std.item()))
 
 
         # writer.add_scalar('Regression_loss', reg_loss.item(),

@@ -53,6 +53,7 @@ def test_parser():
     parser.add_argument('--freeze_heads', type=bool, default=False) 
     parser.add_argument('--name_output_result', type=str, default='prova')  #validate, test
     parser.add_argument('--len_past', type=int, default=2)  #validate, test
+    parser.add_argument('--delay', type=int, default=None)
 
     #wo_backbone: jump the backbone part that generate the feature map and read it from the disk, saved previously
     #classic: use the backbone to generate the feature map
@@ -77,6 +78,10 @@ def main():
     hypes['split_dataset'] = opt.split_dataset
     hypes['freeze_heads'] = opt.freeze_heads
     hypes['len_past'] = opt.len_past
+
+    if opt.delay is not None:
+        hypes['module_delay'] = True
+        hypes['delay']['future_delay'] = opt.delay
 
     print('module delay:', hypes['module_delay'])
     print('split dataset:', hypes['split_dataset'])
@@ -161,7 +166,8 @@ def main():
                     inference_utils.inference_intermediate_fusion(batch_data,
                                                                   model,
                                                                   opencood_dataset,
-                                                                  forward_type=opt.forward_type)
+                                                                  forward_type=opt.forward_type,
+                                                                  )
             else:
                 raise NotImplementedError('Only early, late and intermediate'
                                           'fusion is supported.')

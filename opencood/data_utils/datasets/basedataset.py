@@ -235,9 +235,9 @@ class BaseDataset(Dataset):
 
         data = OrderedDict()
 
-        delay_index_total = []
-        delay_key_total = []
-        ego_list = []
+        delay_index_total = [] # list of all cavs' delay index, i.e. 2, 3, 4, ... 
+        delay_key_total = [] # list of all cavs' delay timestamp keys, i.e. '000078', '000077', '000076', ...
+        ego_list = [] # list to record which cav is ego
         # load files for all CAVs
         for cav_id, cav_content in scenario_database.items():
             data[cav_id] = OrderedDict()
@@ -254,7 +254,7 @@ class BaseDataset(Dataset):
 
             # add time delay to vehicle parameters
             data[cav_id]['time_delay'] = timestamp_delay
-            # load the corresponding data into the dictionary  #todo:check timestamp_delay
+            # load the corresponding data into the dictionary
             data[cav_id]['params'] = self.reform_param(cav_content,
                                                        ego_cav_content,
                                                        timestamp_key,
@@ -268,9 +268,9 @@ class BaseDataset(Dataset):
 
         data_example = {
             'ego_list': ego_list,
-            'scenario_index': scenario_index,
-            'timestamp_key': timestamp_key,
-            'timestamp_index': timestamp_index,
+            'scenario_index': scenario_index, 
+            'timestamp_key': timestamp_key, # current timestamp key, i.e. '000080'
+            'timestamp_index': timestamp_index, # index of the timestamp in the whole dataset, i.e. 2, 3, 4, ...
             'delay_index_total': delay_index_total,
             'delay_key_total': delay_key_total,
         }

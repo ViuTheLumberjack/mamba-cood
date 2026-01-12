@@ -6,6 +6,7 @@ from opencood.data_utils.datasets.late_fusion_dataset import LateFusionDataset
 from opencood.data_utils.datasets.early_fusion_dataset import EarlyFusionDataset
 from opencood.data_utils.datasets.intermediate_fusion_dataset import IntermediateFusionDataset
 from opencood.data_utils.datasets.intermediate_fusion_dataset_v2 import IntermediateFusionDatasetV2
+from opencood.data_utils.datasets.intermediate_fusion_dataset_history import IntermediateHistoricalFusionDataset
 from opencood.data_utils.datasets.F2F_dataset import F2FDataset
 
 __all__ = {
@@ -13,6 +14,7 @@ __all__ = {
     'EarlyFusionDataset': EarlyFusionDataset,
     'IntermediateFusionDataset': IntermediateFusionDataset,
     'IntermediateFusionDatasetV2': IntermediateFusionDatasetV2,
+    'IntermediateHistoricalFusionDataset': IntermediateHistoricalFusionDataset,
     'F2FDataset': F2FDataset
 }
 
@@ -27,7 +29,7 @@ def build_dataset(dataset_cfg, visualize=False, train=True):
     error_message = f"{dataset_name} is not found. " \
                     f"Please add your processor file's name in opencood/" \
                     f"data_utils/datasets/init.py"
-    assert dataset_name in ['LateFusionDataset', 'EarlyFusionDataset', 'IntermediateFusionDataset', 'IntermediateFusionDatasetV2', 'F2FDataset'], error_message
+    assert dataset_name in ['LateFusionDataset', 'EarlyFusionDataset', 'IntermediateFusionDataset', 'IntermediateFusionDatasetV2', 'IntermediateHistoricalFusionDataset', 'F2FDataset'], error_message
 
     dataset = __all__[dataset_name](
         params=dataset_cfg,
