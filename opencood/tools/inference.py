@@ -81,7 +81,9 @@ def main():
 
     if opt.delay is not None:
         hypes['module_delay'] = True
+        hypes['wild_setting']['async_overhead'] = int(opt.delay) * 100
         hypes['delay']['future_delay'] = opt.delay
+        hypes['model']['args']['delay']['args']['future_delay'] = int(opt.delay) * 100
 
     print('module delay:', hypes['module_delay'])
     print('split dataset:', hypes['split_dataset'])

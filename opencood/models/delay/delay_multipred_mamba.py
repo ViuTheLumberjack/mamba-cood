@@ -171,7 +171,8 @@ class MambaMultiPredictor(nn.Module):
         seq = einops.rearrange(patches, 'b t np hd -> b (t np) hd')
         
         # Add prediction token at the end
-        pred_tokens = self.pred_token.expand(B, 1, -1)
+        num_pred_tokens = self.num_future_preds * self.num_patches
+        pred_tokens = self.pred_token.expand(B, num_pred_tokens, -1)
         seq = torch.cat([seq, pred_tokens], dim=1)
         
         # Process through Mamba2 blocks
@@ -181,7 +182,6 @@ class MambaMultiPredictor(nn.Module):
         seq = self.final_norm(seq)
         
         # Extract prediction tokens output
-        num_pred_tokens = self.num_future_preds * self.num_patches
         pred_seq = seq[:, -num_pred_tokens:]  # [B, num_future_preds * num_patches, hidden_dim]
         pred_seq = einops.rearrange(
             pred_seq, 'b (f np) hd -> f b np hd', 
@@ -190,7 +190,9 @@ class MambaMultiPredictor(nn.Module):
         
         # Reconstruct each future prediction with its own head
         preds = []
-        for i, head in enumerate(self.reconstruction_heads):
+        #for i, head in enumerate(self.reconstruction_heads):
+        for i in range(self.num_future_preds):
+            head = self.reconstruction_heads[i]
             pred_frame = head(pred_seq[i])  # [B, num_patches, input_dim]
 
             preds.append(pred_frame)

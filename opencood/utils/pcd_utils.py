@@ -7,6 +7,7 @@
 Utility functions related to point cloud
 """
 
+import os
 import open3d as o3d
 import numpy as np
 
@@ -201,3 +202,15 @@ def downsample_lidar_minimum(pcd_np_list):
         pcd_np_list[i] = downsample_lidar(pcd_np, minimum)
 
     return pcd_np_list
+
+def load_lidar_bin(path, zero_intensity=False):
+    if not os.path.exists(path):
+        path = path.split(".")[0] + ".pcd"
+        return pcd_to_np(path)
+    bin_pcd = np.fromfile(path, dtype=np.float32)
+    points = bin_pcd.reshape(-1,4)
+    mask = np.logical_not(np.isnan(points[:, :3]).any(axis=1))
+    points = points[mask]
+    if zero_intensity:
+        points[:, -1] = 0
+    return points

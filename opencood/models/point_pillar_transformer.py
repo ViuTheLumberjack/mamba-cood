@@ -60,6 +60,8 @@ class PointPillarTransformer(nn.Module):
         self.reg_head = nn.Conv2d(128 * 2, 7 * args['anchor_number'],
                                   kernel_size=1)
 
+        self.exclude_ego = args.get('exclude_ego', False)
+
         self.module_delay_flag = args['module_delay']
         if self.module_delay_flag:
             self.module_delay = opencood.models.delay.build_delay_module(
@@ -117,18 +119,30 @@ class PointPillarTransformer(nn.Module):
         
         
         if self.module_delay_flag:
-            past_feature = data_dict['past_features']    
-            # concatenate along time dimension        
-            total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1)
-            
+            # filter the ego vehicle out
+            if self.exclude_ego:
+                ego_list = torch.Tensor(data_dict['ego_list']).bool().squeeze(0)
+                ego_list = ~ego_list
+                
+                past_feature = data_dict['past_features']    
+                # concatenate along time dimension        
+                total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1)
+                ego_mat = ego_list.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, total_feature.shape[1], total_feature.shape[2], total_feature.shape[3], total_feature.shape[4]).cuda()
+                total_feature = total_feature * ego_mat
+            else:
+                past_feature = data_dict['past_features']      
+                total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1)
+
             # Use the future frame predictor
             feature_encoded, predictions = self.module_delay(total_feature)
             
             # IMP2: residuals, TODO: change me later
-            res = feature_saved
-            for t in range(predictions.shape[0]):
-                predictions[t] = predictions[t] + res
-                res = predictions[t] 
+            #res = feature_saved
+            #for t in range(predictions.shape[0]):
+            #    predictions[t] = predictions[t] + res
+            #    res = predictions[t] 
+            feature_encoded = feature_encoded + feature_saved
+            predictions = predictions + feature_saved.unsqueeze(0).repeat(predictions.shape[0], 1, 1, 1, 1)
         else:
             feature_encoded = feature_saved
             predictions = feature_encoded.unsqueeze(0)

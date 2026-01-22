@@ -70,7 +70,6 @@ class WeightedSmoothL1Loss(nn.Module):
 
         return loss
 
-
 class PointPillarLoss(nn.Module):
     def __init__(self, args):
         super(PointPillarLoss, self).__init__()
@@ -97,6 +96,36 @@ class PointPillarLoss(nn.Module):
         -------
         loss : float
         """
+       # Assicuriamoci che input e target abbiano la stessa shape
+        assert output.shape == target.shape
+        
+        # 1. Calcola l'intensità della Ground Truth per ogni pixel spaziale (B, H, W)
+        # Usiamo einops per sommare il valore assoluto lungo i canali C
+        target_magnitude = einops.reduce(torch.abs(target), '... c h w -> ... 1 h w', 'sum')
+
+        # 2. Crea la maschera attiva (Foreground)
+        # Se la somma delle feature in un pixel è > 1e-4, consideralo un oggetto/info utile
+        active_mask = (target_magnitude > 1e-2).float()
+
+        # 3. Definisci i pesi
+        # Foreground: peso 1.0
+        # Background: peso 0.1 (o 0.05 se vuoi penalizzarlo ancora meno)
+        weights = active_mask * 2.0 + (1 - active_mask) * 0.25
+
+        # 4. Calcola la differenza assoluta (L1)
+        diff = torch.abs(output - target)
+
+        # 5. Applica i pesi alla differenza
+        weighted_diff = diff * weights
+
+        # 6. Calcola la media (o somma normalizzata per numero di elementi)
+        # Riduciamo tutto a un singolo scalare
+        # loss = einops.reduce(weighted_diff, '... -> 1', 'mean')
+
+        # Rimuovi la dimensione extra dello scalare
+        #print("Delay loss:", weighted_diff.shape)
+        return weighted_diff
+    
         #return F.l1_loss(output, target, reduction='none')
         return F.huber_loss(output, target, reduction='none', delta=self.delay_beta)
         # Charbonnier loss

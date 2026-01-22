@@ -68,9 +68,10 @@ class MambaFutureFramePredictor(nn.Module):
         self.expand = args.get('expand', 2)
         self.use_bidirectional = args.get('use_bidirectional', False)
         self.dropout_rate = args.get('dropout', 0.1)
+        self.scans = args.get("scans", "horizonatal")# "all", "horizontal", "vertical"
 
         self.num_patches = (self.height // self.patch_size) * (self.width // self.patch_size)
-        self.input_dim = self.input_channels * self.patch_size * self.patch_size
+        self.input_dim = self.input_channels * self.patch_size * self.patch_size #* (1 if self.scans == "all" else 2)
 
         # Patch embedding
         self.flatten = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
@@ -120,6 +121,7 @@ class MambaFutureFramePredictor(nn.Module):
         B, T, C, H, W = x.shape
         x = einops.rearrange(x, 'b t c h w -> (b t) c h w')
         patches = self.flatten(x)  # [B*T, patch_dim, num_patches]
+        print("Patches:", patches.shape)
         patches = einops.rearrange(patches, 'bt pd np -> bt np pd')
         patches = self.embed(patches)  # [B*T, num_patches, hidden_dim]
         patches = self.embed_norm(patches)
@@ -149,10 +151,12 @@ class MambaFutureFramePredictor(nn.Module):
         
         # Patchify and add positional encoding
         patches = self.patchify(x)  # [B, T, num_patches, hidden_dim]
+        print(patches.shape)
         patches = self.add_positional_encoding(patches)
         
         # Flatten spatiotemporal dimensions
         seq = einops.rearrange(patches, 'b t np hd -> b (t np) hd')
+        print("Seq shape:", seq.shape)
         
         # Add prediction token at the end
         pred_tokens = self.pred_token.expand(B, 1, -1)
@@ -163,6 +167,7 @@ class MambaFutureFramePredictor(nn.Module):
             seq = block(seq)
         
         seq = self.final_norm(seq)
+        print("Final seq shape:", seq.shape)
         
         # Extract prediction token output
         pred_token_out = seq[:, -1:]  # [B, 1, hidden_dim]
@@ -219,18 +224,21 @@ if __name__ == '__main__':
     x = torch.randn(B, T, C, H, W).to("cuda")
 
     # Single frame prediction
-    model = MambaFutureFramePredictor(
-        t=T,
-        input_channels=C,
-        height=H,
-        width=W,
-        hidden_dim=512,
-        patch_size=8,
-        num_layers=6,
-        d_state=64,
-        d_conv=4, 
-        use_bidirectional=True
-    ).to("cuda")
+    args = {
+        "input_channels":C,
+        "height":H,
+        "width":W,
+        "hidden_dim":512,
+        "patch_size":8,
+        "num_layers":1,
+        "d_state":64,
+        "d_conv":4, 
+        "espand": 2,
+        "use_bidirectional":True
+    }
+
+    # Single frame prediction
+    model = MambaFutureFramePredictor(args).to("cuda")
     
     y = model(x)
     print(f"Input shape: {x.shape}")
