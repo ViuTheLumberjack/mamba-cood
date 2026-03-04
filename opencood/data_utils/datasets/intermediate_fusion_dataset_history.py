@@ -58,7 +58,7 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
 
         self.intermediate_preds = params['delay'].get('future_delay_list', False) if not self.extract else []
         self.max_delay = max(self.intermediate_preds) if len(self.intermediate_preds) > 0 else 0
-        self.len_past = max(int(params['len_past']), len(self.intermediate_preds))
+        self.len_past = int(params['len_past'])
 
     def __load_sequence(self, delay_key, scenario_index, cav_i, folder_path_main, seq_range) -> tuple[torch.Tensor, list] :
         feature_sequence = []
@@ -261,8 +261,11 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
                     gt_features.append(gt_features_i)
 
                     past_seq_range = range(-self.len_past,0, 1)
-                    past_features_i, _ = self.__load_sequence(delay_key, scenario_index, cav_i, folder_path_main, past_seq_range) 
-                    past_features.append(past_features_i)
+                    if len(past_seq_range) >0:
+                        past_features_i, _ = self.__load_sequence(delay_key, scenario_index, cav_i, folder_path_main, past_seq_range) 
+                        past_features.append(past_features_i)
+                    else:
+                        past_features.append(torch.zeros(0, 8, 48, 176))
                     
             current_features = torch.stack(current_features)
             gt_features = torch.stack(gt_features)
@@ -484,7 +487,7 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
 
         #todo
         gt_features = torch.Tensor(np.concatenate(gt_features, axis=0))
-        past_features = torch.Tensor(np.concatenate(past_features, axis=0))
+        past_features = torch.Tensor(np.concatenate(past_features, axis=0)) 
         current_features = torch.Tensor(np.concatenate(current_features, axis=0))
 
 

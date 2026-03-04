@@ -1,0 +1,30 @@
+name_output_result : 'prova'  #validate, test
+len_past: 2 
+delay: 400
+forward_type: 'wo_backbone' 
+show_vis : false              
+show_sequence : false                    
+save_vis : true                     
+save_npy : false                     
+global_sort_detections : false   
+split_dataset: 'validate'
+
+models: 
+  - baseline:
+      model_dir : 'MODEL_v2xset/v2x-vit'
+      name_yaml : 
+      fusion_method : intermediate
+      mode: 'feature'
+      module_delay: false
+      specific_path: null
+      specific_epoch: null
+      freeze_heads: false
+  - compare_0:
+      model_dir : 'MODEL_v2xset/v2x-vit'
+      name_yaml : 
+      fusion_method : intermediate
+      mode: 'feature'
+      module_delay: false
+      specific_path: null
+      specific_epoch: null
+      freeze_heads: false

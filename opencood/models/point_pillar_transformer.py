@@ -70,6 +70,8 @@ class PointPillarTransformer(nn.Module):
 
         # not enough memory
         self.all_preds = False #len(args['delay']['args']['future_delay_list']) > 1
+        
+        self.timings = [] 
 
         if args['backbone_fix']:
             self.backbone_fix() 
@@ -108,6 +110,12 @@ class PointPillarTransformer(nn.Module):
         print('loaded')
 
     def forward_feature_wo_backbone(self, data_dict, inference=False):
+        if inference:
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+
+
         record_len = data_dict['record_len']
         spatial_correction_matrix = data_dict['spatial_correction_matrix']
 
@@ -126,12 +134,12 @@ class PointPillarTransformer(nn.Module):
                 
                 past_feature = data_dict['past_features']    
                 # concatenate along time dimension        
-                total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1)
+                total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
                 ego_mat = ego_list.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, total_feature.shape[1], total_feature.shape[2], total_feature.shape[3], total_feature.shape[4]).cuda()
                 total_feature = total_feature * ego_mat
             else:
                 past_feature = data_dict['past_features']      
-                total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1)
+                total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
 
             # Use the future frame predictor
             feature_encoded, predictions = self.module_delay(total_feature)
@@ -165,6 +173,11 @@ class PointPillarTransformer(nn.Module):
 
         psm = self.cls_head(fused_feature)
         rm = self.reg_head(fused_feature)
+
+        if inference:
+            end.record()
+            torch.cuda.synchronize()
+            self.timings.append(start.elapsed_time(end))
                 
         output_dict = {'psm': psm,
                     'rm': rm,

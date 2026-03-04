@@ -249,7 +249,7 @@ def color_encoding(intensity, mode='intensity'):
 def visualize_single_sample_output_gt(pred_tensor,
                                       gt_tensor,
                                       pcd,
-                                      show_vis=True,
+                                      show_vis=False,
                                       save_path='',
                                       mode='constant'):
     """
@@ -580,7 +580,7 @@ def save_o3d_visualization(element, save_path):
         The save path.
     """
     vis = o3d.visualization.Visualizer()
-    vis.create_window()
+    vis.create_window(visible=False)
     for i in range(len(element)):
         vis.add_geometry(element[i])
         vis.update_geometry(element[i])

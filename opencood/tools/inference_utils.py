@@ -62,7 +62,7 @@ def inference_early_fusion(batch_data, model, dataset, forward_type='classic'):
     if forward_type == 'classic':
         output_dict['ego'] = model(cav_content)
     elif forward_type == 'wo_backbone':
-        output_dict['ego'] = model.forward_feature_wo_backbone(cav_content, inference=False)
+        output_dict['ego'] = model.forward_feature_wo_backbone(cav_content, inference=True)
     
     pred_box_tensor, pred_score, gt_box_tensor = dataset.post_process(batch_data, output_dict)
 

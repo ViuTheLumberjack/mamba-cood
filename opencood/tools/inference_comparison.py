@@ -8,6 +8,7 @@ import os
 import time
 from tqdm import tqdm
 import sys
+import yaml
 
 import torch
 import open3d as o3d
@@ -62,17 +63,44 @@ def test_parser():
     opt = parser.parse_args()
     return opt
 
+def compare_parser():
+    parser = argparse.ArgumentParser(description="inference comparison")
+    parser.add_argument('--config', type=str, required=True, default='../compare.yaml',
+                        help='Comparison yaml config file')
+    
+    opt = parser.parse_args()
+
+    with open(opt.config, 'r') as f:
+        config = yaml.safe_load(f)
+
+    print('Comparison Configuration:')
+    base_conf = config.copy()
+    key_names = [list(base_conf['models'][i].keys())[0] for i in range(len(config['models']))] 
+    del base_conf['models']
+
+
+    # convert to argparse.Namespace, with the same fields as in method test_parser
+    # return a list of namespaces, personalized for each different model
+    
+    namespace = [argparse.Namespace(**base_conf) for i in range(len(config['models']))]
+    
+    for i, model_conf in enumerate(config['models']):
+        for j in model_conf.keys():
+            for k, value in model_conf[j].items():
+                setattr(namespace[key_names[i]], k, value)    
+
+    
+    return base_conf, namespace
 
 def main():
-    opt = test_parser()
+    base, models = compare_parser()
+
     assert opt.fusion_method in ['late', 'early', 'intermediate']
     assert not (opt.show_vis and opt.show_sequence), 'you can only visualize ' \
                                                     'the results in single ' \
                                                     'image mode or video mode'
 
     hypes = yaml_utils.load_yaml(None, opt)
-
-    print(opt)
 
     #add mode in hypes
     hypes['mode'] = opt.mode
@@ -105,7 +133,6 @@ def main():
 
     print('Dataset Building')
     opencood_dataset = build_dataset(hypes, visualize=True, train=False)
-    # opencood_dataset = build_dataset(hypes, visualize=True, train=True)
     print(f"{len(opencood_dataset)} samples found.")
     data_loader = DataLoader(opencood_dataset,
                              batch_size=1,

@@ -9,13 +9,13 @@ echo "Using GPU ID: $GPU_ID"
 
 # my baseline: v2x-vit, intermediate fusion, classic delay compensation, 400ms delay (1-4 past frames)
 
+if false; then
 echo "Evaluating v2x-vit with classic delay compensation (400ms delay) 1 len past"
 #CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit --fusion_method 'intermediate' --name_output_result 'training_classic_delay400ms' --split_dataset 'training'
 #CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit --fusion_method 'intermediate' --name_output_result 'validate_classic_delay400ms' --split_dataset 'validate'
 CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit --fusion_method 'intermediate' --name_output_result 'test_classic_delay400ms' --split_dataset 'test' --name_yaml config_evaluation_400ms.yaml
-CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit --fusion_method 'intermediate' --name_output_result 'test_classic_delay400ms_noRTE' --split_dataset 'test' --name_yaml config_evaluation_400ms_noRTE.yaml
+#CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit --fusion_method 'intermediate' --name_output_result 'test_classic_delay400ms_noRTE' --split_dataset 'test' --name_yaml config_evaluation_400ms_noRTE.yaml
 
-if false; then
 echo "Evaluating v2x-vit with 3DCNN block delay compensation (400ms delay) 2 len past"
 CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit/TRAININGS/3dcnn-400ms --fusion_method 'intermediate' --name_output_result 'training_3dcnn_400ms_2past' --split_dataset 'training' --module_delay  --specific_path 'MODEL_v2xset/v2x-vit/TRAININGS/3dcnn-400ms/net_epoch76.pth'  --specific_epoch 76 --name_yaml config_training_hypes.yaml
 CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit/TRAININGS/3dcnn-400ms --fusion_method 'intermediate' --name_output_result 'validate_3dcnn_400ms_2past' --split_dataset 'validate' --module_delay  --specific_path 'MODEL_v2xset/v2x-vit/TRAININGS/3dcnn-400ms/net_epoch76.pth'  --specific_epoch 76 --name_yaml config_training_hypes.yaml
@@ -163,4 +163,44 @@ echo "Evaluating ${TITLE}"
 CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit/TRAININGS/$TITLE --fusion_method 'intermediate' --name_output_result "training_$TITLE_$EPOCH" --split_dataset 'training' --module_delay  --specific_path MODEL_v2xset/v2x-vit/TRAININGS/$TITLE/net_epoch${EPOCH}.pth  --specific_epoch $EPOCH --name_yaml config_training_hypes.yaml
 CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit/TRAININGS/$TITLE --fusion_method 'intermediate' --name_output_result "validate_$TITLE_$EPOCH" --split_dataset 'validate' --module_delay  --specific_path MODEL_v2xset/v2x-vit/TRAININGS/$TITLE/net_epoch${EPOCH}.pth  --specific_epoch $EPOCH --name_yaml config_training_hypes.yaml
 CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit/TRAININGS/$TITLE --fusion_method 'intermediate' --name_output_result "test_$TITLE_$EPOCH" --split_dataset 'test' --module_delay  --specific_path MODEL_v2xset/v2x-vit/TRAININGS/$TITLE/net_epoch${EPOCH}.pth --specific_epoch $EPOCH --name_yaml config_training_hypes.yaml
+
+EPOCH=78
+TITLE="bimamba2-encoding-cls-3-02drop-400ms-singlepred-RTE"
+echo "Evaluating ${TITLE}"
+CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit/TRAININGS/$TITLE --fusion_method 'intermediate' --name_output_result "test_$TITLE_$EPOCH" --split_dataset 'test' --module_delay  --specific_path MODEL_v2xset/v2x-vit/TRAININGS/$TITLE/net_epoch${EPOCH}.pth --specific_epoch $EPOCH --name_yaml config_training_hypes.yaml
+
+EPOCH=84
+TITLE="mamba2-768-3-encoding-cls-02drop-400ms-maskedl1-noRTE"
+echo "Evaluating ${TITLE}"
+CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit/TRAININGS/$TITLE --fusion_method 'intermediate' --name_output_result "test_$TITLE_$EPOCH" --split_dataset 'test' --module_delay  --specific_path MODEL_v2xset/v2x-vit/TRAININGS/$TITLE/net_epoch${EPOCH}.pth --specific_epoch $EPOCH --name_yaml config_training_hypes.yaml
+
+EPOCH=76
+TITLE="mamba2-768-3-encoding-cls-02drop-400ms-charb-noRTE"
+echo "Evaluating ${TITLE}"
+CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit/TRAININGS/$TITLE --fusion_method 'intermediate' --name_output_result "test_$TITLE_$EPOCH" --split_dataset 'test' --module_delay  --specific_path MODEL_v2xset/v2x-vit/TRAININGS/$TITLE/net_epoch${EPOCH}.pth --specific_epoch $EPOCH --name_yaml config_training_hypes.yaml
+
+EPOCH=68
+TITLE="mamba2-encoding-cls-2-02drop-400ms-singlepred-noRTE"
+echo "Evaluating ${TITLE}"
+CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit/TRAININGS/$TITLE --fusion_method 'intermediate' --name_output_result "test_$TITLE_$EPOCH" --split_dataset 'test' --module_delay  --specific_path MODEL_v2xset/v2x-vit/TRAININGS/$TITLE/net_epoch${EPOCH}.pth --specific_epoch $EPOCH --name_yaml config_training_hypes.yaml
+
+EPOCH=84
+TITLE="bimamba2-3-encoding-cls-02drop-400ms-excludeego_singlepred-noRTE"
+echo "Evaluating ${TITLE}"
+CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --model_dir MODEL_v2xset/v2x-vit/TRAININGS/$TITLE --fusion_method 'intermediate' --name_output_result "test_$TITLE_$EPOCH" --split_dataset 'test' --module_delay  --specific_path MODEL_v2xset/v2x-vit/TRAININGS/$TITLE/net_epoch${EPOCH}.pth --specific_epoch $EPOCH --name_yaml config_training_hypes.yaml
+
+predictions=(0 1 2 3 4)
+
+EPOCH=68
+TITLE="bimamba2-encoding-cls-1-nolin-02drop-400ms-multpred-RTE"
+echo "Evaluating ${TITLE}"
+for PRED in "${predictions[@]}"; do
+    echo "  with prediction horizon: ${PRED}ms"
+    CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --len_past 4 --model_dir MODEL_v2xset/v2x-vit/TRAININGS/$TITLE --fusion_method 'intermediate' --name_output_result "test_${TITLE}_epoch${EPOCH}_pred${PRED}ms" --split_dataset 'test' --module_delay  --specific_path MODEL_v2xset/v2x-vit/TRAININGS/$TITLE/net_epoch${EPOCH}.pth --specific_epoch $EPOCH --name_yaml config_training_hypes.yaml --delay $PRED
+done
 fi
+
+EPOCH=86
+TITLE="bimamba2-encoding-cls-1-02drop-400ms-noRTE-0past"
+echo "Evaluating ${TITLE}"
+CUDA_VISIBLE_DEVICES=$GPU_ID python opencood/tools/inference.py --len_past 0 --model_dir MODEL_v2xset/v2x-vit/TRAININGS/$TITLE --fusion_method 'intermediate' --name_output_result "test_$TITLE_$EPOCH" --split_dataset 'test' --module_delay  --specific_path MODEL_v2xset/v2x-vit/TRAININGS/$TITLE/net_epoch${EPOCH}.pth --specific_epoch $EPOCH --name_yaml config_training_hypes.yaml

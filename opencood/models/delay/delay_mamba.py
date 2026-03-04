@@ -121,7 +121,7 @@ class MambaFutureFramePredictor(nn.Module):
         B, T, C, H, W = x.shape
         x = einops.rearrange(x, 'b t c h w -> (b t) c h w')
         patches = self.flatten(x)  # [B*T, patch_dim, num_patches]
-        print("Patches:", patches.shape)
+        #print("Patches:", patches.shape)
         patches = einops.rearrange(patches, 'bt pd np -> bt np pd')
         patches = self.embed(patches)  # [B*T, num_patches, hidden_dim]
         patches = self.embed_norm(patches)
@@ -151,32 +151,26 @@ class MambaFutureFramePredictor(nn.Module):
         
         # Patchify and add positional encoding
         patches = self.patchify(x)  # [B, T, num_patches, hidden_dim]
-        print(patches.shape)
+        #print(patches.shape)
         patches = self.add_positional_encoding(patches)
         
         # Flatten spatiotemporal dimensions
         seq = einops.rearrange(patches, 'b t np hd -> b (t np) hd')
-        print("Seq shape:", seq.shape)
+        #print("Seq shape:", seq.shape)
         
         # Add prediction token at the end
-        pred_tokens = self.pred_token.expand(B, 1, -1)
-        seq = torch.cat([seq, pred_tokens], dim=1)
+        # pred_tokens = self.pred_token.expand(B, self.num_patches, -1)
+        # seq = torch.cat([seq, pred_tokens], dim=1)
         
         # Process through Mamba2 blocks
         for block in self.blocks:
             seq = block(seq)
         
         seq = self.final_norm(seq)
-        print("Final seq shape:", seq.shape)
-        
-        # Extract prediction token output
-        pred_token_out = seq[:, -1:]  # [B, 1, hidden_dim]
-        
-        # Broadcast to all spatial positions
-        pred_patches = pred_token_out.expand(-1, self.num_patches, -1)
-        
+        #print("Final seq shape:", seq.shape)
+
         # Or use the last frame tokens directly:
-        last_frame_tokens = seq[:, -(self.num_patches+1):-1]  # [B, num_patches, hidden_dim]
+        last_frame_tokens = seq[:, -self.num_patches:]  # [B, num_patches, hidden_dim]
         
         # Reconstruct patches
         recon_patches = self.to_patch(last_frame_tokens)  # [B, num_patches, patch_dim]

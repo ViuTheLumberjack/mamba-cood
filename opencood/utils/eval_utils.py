@@ -176,13 +176,14 @@ def eval_final_results(result_stat, save_path, global_sort_detections, get_resul
         
     name_file = 'eval' if name_file is None else name_file
     output_file = name_file  + '.yaml' if not global_sort_detections else 'eval_global_sort.yaml'
-    yaml_utils.save_yaml(dump_dict, os.path.join(save_path, output_file))
+    #yaml_utils.save_yaml(dump_dict, os.path.join(save_path, output_file))
 
     print('The Average Precision at IOU 0.3 is %.3f, '
         'The Average Precision at IOU 0.5 is %.3f, '
         'The Average Precision at IOU 0.7 is %.3f' % (ap_30, ap_50, ap_70))
     
     #save .txt with results
+    
     folder_save = os.path.join(save_path, 'RESULTS', output_file) + '.txt'
     if not os.path.exists(os.path.dirname(folder_save)):
         os.makedirs(os.path.dirname(folder_save))

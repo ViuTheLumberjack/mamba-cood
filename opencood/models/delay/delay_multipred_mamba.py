@@ -92,7 +92,7 @@ class MambaMultiPredictor(nn.Module):
         )
 
         # Prediction token (alternative to using last frame patches)
-        self.pred_token = nn.Parameter(torch.randn(1, 1, self.hidden_dim))
+        self.pred_token = nn.Parameter(torch.randn(1, self.num_future_preds*self.num_patches, self.hidden_dim))
 
         # Mamba2 backbone with residual connections and normalization
         if self.use_bidirectional:
@@ -172,8 +172,8 @@ class MambaMultiPredictor(nn.Module):
         
         # Add prediction token at the end
         num_pred_tokens = self.num_future_preds * self.num_patches
-        pred_tokens = self.pred_token.expand(B, num_pred_tokens, -1)
-        seq = torch.cat([seq, pred_tokens], dim=1)
+        #pred_tokens = self.pred_token.expand(B, -1, -1)
+        #seq = torch.cat([seq, pred_tokens], dim=1)
         
         # Process through Mamba2 blocks
         for block in self.blocks:

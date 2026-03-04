@@ -96,37 +96,38 @@ class PointPillarLoss(nn.Module):
         -------
         loss : float
         """
-       # Assicuriamoci che input e target abbiano la stessa shape
-        assert output.shape == target.shape
-        
-        # 1. Calcola l'intensità della Ground Truth per ogni pixel spaziale (B, H, W)
-        # Usiamo einops per sommare il valore assoluto lungo i canali C
-        target_magnitude = einops.reduce(torch.abs(target), '... c h w -> ... 1 h w', 'sum')
+        def masked_weighted_l1_loss(output: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+            # Assicuriamoci che input e target abbiano la stessa shape
+            assert output.shape == target.shape
+            
+            # 1. Calcola l'intensità della Ground Truth per ogni pixel spaziale (B, H, W)
+            # Usiamo einops per sommare il valore assoluto lungo i canali C
+            target_magnitude = einops.reduce(torch.abs(target), '... c h w -> ... 1 h w', 'sum')
 
-        # 2. Crea la maschera attiva (Foreground)
-        # Se la somma delle feature in un pixel è > 1e-4, consideralo un oggetto/info utile
-        active_mask = (target_magnitude > 1e-2).float()
+            # 2. Crea la maschera attiva (Foreground)
+            # Se la somma delle feature in un pixel è > 1e-4, consideralo un oggetto/info utile
+            active_mask = (target_magnitude > 1e-2).float()
 
-        # 3. Definisci i pesi
-        # Foreground: peso 1.0
-        # Background: peso 0.1 (o 0.05 se vuoi penalizzarlo ancora meno)
-        weights = active_mask * 2.0 + (1 - active_mask) * 0.25
+            # 3. Definisci i pesi
+            # Foreground: peso 1.0
+            # Background: peso 0.1 (o 0.05 se vuoi penalizzarlo ancora meno)
+            weights = active_mask * 100.0 + (1 - active_mask) * 1.0
 
-        # 4. Calcola la differenza assoluta (L1)
-        diff = torch.abs(output - target)
+            # 4. Calcola la differenza assoluta (L1)
+            diff = torch.abs(output - target)
 
-        # 5. Applica i pesi alla differenza
-        weighted_diff = diff * weights
+            # 5. Applica i pesi alla differenza
+            weighted_diff = diff * weights
 
-        # 6. Calcola la media (o somma normalizzata per numero di elementi)
-        # Riduciamo tutto a un singolo scalare
-        # loss = einops.reduce(weighted_diff, '... -> 1', 'mean')
+            # 6. Calcola la media (o somma normalizzata per numero di elementi)
+            # Riduciamo tutto a un singolo scalare
+            # loss = einops.reduce(weighted_diff, '... -> 1', 'mean')
 
-        # Rimuovi la dimensione extra dello scalare
-        #print("Delay loss:", weighted_diff.shape)
-        return weighted_diff
+            # Rimuovi la dimensione extra dello scalare
+            #print("Delay loss:", weighted_diff.shape)
+            return weighted_diff
     
-        #return F.l1_loss(output, target, reduction='none')
+        # return masked_weighted_l1_loss(output, target)
         return F.huber_loss(output, target, reduction='none', delta=self.delay_beta)
         # Charbonnier loss
         def charbonnier_loss(x, epsilon=1e-6):
@@ -140,7 +141,7 @@ class PointPillarLoss(nn.Module):
             x_flat = einops.rearrange(x, 't c h w -> t (c h w)')
             y_flat = einops.rearrange(y, 't c h w -> t (c h w)')
 
-            cos = F.cosine_similarity(x_flat, y_flat, dim=1, eps=1e-6)
+            cos = F.cosine_similarity(x_flat, y_flat, dim=1, eps=1e-1)
             cos = 1 - cos
             return cos 
         
@@ -194,7 +195,7 @@ class PointPillarLoss(nn.Module):
         else:
             loss = torch.zeros(1).cuda()
 
-        if self.args['freeze_heads'] == False:
+        if True: #self.args['freeze_heads'] == False:
             conf_loss = 0
             cls_preds = psm.permute(0, 2, 3, 1).contiguous()
 
