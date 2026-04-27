@@ -96,56 +96,14 @@ class PointPillarLoss(nn.Module):
         -------
         loss : float
         """
-        def masked_weighted_l1_loss(output: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-            # Assicuriamoci che input e target abbiano la stessa shape
-            assert output.shape == target.shape
-            
-            # 1. Calcola l'intensità della Ground Truth per ogni pixel spaziale (B, H, W)
-            # Usiamo einops per sommare il valore assoluto lungo i canali C
-            target_magnitude = einops.reduce(torch.abs(target), '... c h w -> ... 1 h w', 'sum')
-
-            # 2. Crea la maschera attiva (Foreground)
-            # Se la somma delle feature in un pixel è > 1e-4, consideralo un oggetto/info utile
-            active_mask = (target_magnitude > 1e-2).float()
-
-            # 3. Definisci i pesi
-            # Foreground: peso 1.0
-            # Background: peso 0.1 (o 0.05 se vuoi penalizzarlo ancora meno)
-            weights = active_mask * 100.0 + (1 - active_mask) * 1.0
-
-            # 4. Calcola la differenza assoluta (L1)
-            diff = torch.abs(output - target)
-
-            # 5. Applica i pesi alla differenza
-            weighted_diff = diff * weights
-
-            # 6. Calcola la media (o somma normalizzata per numero di elementi)
-            # Riduciamo tutto a un singolo scalare
-            # loss = einops.reduce(weighted_diff, '... -> 1', 'mean')
-
-            # Rimuovi la dimensione extra dello scalare
-            #print("Delay loss:", weighted_diff.shape)
-            return weighted_diff
-    
-        # return masked_weighted_l1_loss(output, target)
-        return F.huber_loss(output, target, reduction='none', delta=self.delay_beta)
-        # Charbonnier loss
         def charbonnier_loss(x, epsilon=1e-6):
             return torch.sqrt(x * x + epsilon)
         
-        diff = output - target
-        loss = charbonnier_loss(diff, self.delay_beta)
+        #diff = output - target
+        #loss = charbonnier_loss(diff, self.delay_beta)
+        loss = F.l1_loss(output, target, reduction='none')
 
-        def cosine_similarity_loss(x: torch.Tensor, y: torch.Tensor):
-            # T, C, H, W = x.shape
-            x_flat = einops.rearrange(x, 't c h w -> t (c h w)')
-            y_flat = einops.rearrange(y, 't c h w -> t (c h w)')
-
-            cos = F.cosine_similarity(x_flat, y_flat, dim=1, eps=1e-1)
-            cos = 1 - cos
-            return cos 
-        
-        return loss #cosine_similarity_loss(output, target)
+        return loss 
 
     def forward(self, output_dict, target_dict):
         """
@@ -163,96 +121,93 @@ class PointPillarLoss(nn.Module):
         #added loss
         feature_pred = output_dict['feature_output']
         predictions = output_dict['predictions']
+        current = target_dict_copy['ego']['current_features']
         feature_gt = target_dict_copy['ego']['gt_features']
         record_len = target_dict_copy['ego']['record_len']
         ego_list = target_dict_copy['ego']['ego_list']
 
         if self.args['module_delay']:
             loss = 0
-            for i in range(len(record_len)):
-                ego_flag = torch.Tensor(ego_list[i])
-                #from 0 to 1, and from 1 to 0
-                ego_flag = torch.where(ego_flag == 0, 1, 0)
+            # for i in range(len(record_len)):
+            ego_flag = torch.Tensor(ego_list[0])
+            #from 0 to 1, and from 1 to 0
+            ego_flag = torch.where(ego_flag == 0, 1, 0)
 
-                pred = predictions[:, i, :record_len[i]]
-                gt = feature_gt[:, i, :record_len[i]]
+            pred = predictions #[:, i]
+            gt = feature_gt #[:, i]
 
-                delay_loss = self.delay_loss(pred, gt)
+            delay_loss = self.delay_loss(pred, gt)
 
-                ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).unsqueeze(0).repeat(delay_loss.shape[0], 1, delay_loss.shape[2], delay_loss.shape[3]).cuda()
-                # print(ego_flag.shape, delay_loss.shape)
+            ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(0).repeat(delay_loss.shape[0], 1, delay_loss.shape[2], delay_loss.shape[3], delay_loss.shape[4]).cuda()
+            # print(ego_flag.shape, delay_loss.shape)
 
-                try:
-                    delay_loss = delay_loss * ego_flag
-                except:
-                    print('error in l1 loss')
-                delay_loss = delay_loss.sum() / (ego_flag.sum() + 1e-6)
+            try:
+                delay_loss = delay_loss * ego_flag
+            except:
+                print('error in l1 loss')
+            delay_loss = delay_loss.sum() / (ego_flag.sum() + 1e-6)
 
-                loss += delay_loss
+            loss += delay_loss
 
             loss = loss / len(record_len)
             loss *= self.delay_coeff
         else:
             loss = torch.zeros(1).cuda()
 
-        if True: #self.args['freeze_heads'] == False:
-            conf_loss = 0
-            cls_preds = psm.permute(0, 2, 3, 1).contiguous()
+         
+        conf_loss = 0
+        cls_preds = psm.permute(0, 2, 3, 1).contiguous()
 
-            box_cls_labels = target_dict['pos_equal_one']
-            box_cls_labels = box_cls_labels.view(psm.shape[0], -1).contiguous()
+        box_cls_labels = target_dict['pos_equal_one']
+        box_cls_labels = box_cls_labels.view(psm.shape[0], -1).contiguous()
 
-            positives = box_cls_labels > 0
-            negatives = box_cls_labels == 0
-            negative_cls_weights = negatives * 1.0
-            cls_weights = (negative_cls_weights + 1.0 * positives).float()
-            reg_weights = positives.float()
+        positives = box_cls_labels > 0
+        negatives = box_cls_labels == 0
+        negative_cls_weights = negatives * 1.0
+        cls_weights = (negative_cls_weights + 1.0 * positives).float()
+        reg_weights = positives.float()
 
-            pos_normalizer = positives.sum(1, keepdim=True).float()
-            reg_weights /= torch.clamp(pos_normalizer, min=1.0)
-            cls_weights /= torch.clamp(pos_normalizer, min=1.0)
-            cls_targets = box_cls_labels
-            cls_targets = cls_targets.unsqueeze(dim=-1)
+        pos_normalizer = positives.sum(1, keepdim=True).float()
+        reg_weights /= torch.clamp(pos_normalizer, min=1.0)
+        cls_weights /= torch.clamp(pos_normalizer, min=1.0)
+        cls_targets = box_cls_labels
+        cls_targets = cls_targets.unsqueeze(dim=-1)
 
-            cls_targets = cls_targets.squeeze(dim=-1)
-            one_hot_targets = torch.zeros(
-                *list(cls_targets.shape), 2,
-                dtype=cls_preds.dtype, device=cls_targets.device
-            )
-            one_hot_targets.scatter_(-1, cls_targets.unsqueeze(dim=-1).long(), 1.0)
-            cls_preds = cls_preds.view(psm.shape[0], -1, 1)
-            one_hot_targets = one_hot_targets[..., 1:]
+        cls_targets = cls_targets.squeeze(dim=-1)
+        one_hot_targets = torch.zeros(
+            *list(cls_targets.shape), 2,
+            dtype=cls_preds.dtype, device=cls_targets.device
+        )
+        one_hot_targets.scatter_(-1, cls_targets.unsqueeze(dim=-1).long(), 1.0)
+        cls_preds = cls_preds.view(psm.shape[0], -1, 1)
+        one_hot_targets = one_hot_targets[..., 1:]
 
-            cls_loss_src = self.cls_loss_func(cls_preds,
-                                            one_hot_targets,
-                                            weights=cls_weights)  # [N, M]
-            cls_loss = cls_loss_src.sum() / psm.shape[0]
-            conf_loss += cls_loss * self.cls_weight
+        cls_loss_src = self.cls_loss_func(cls_preds,
+                                        one_hot_targets,
+                                        weights=cls_weights)  # [N, M]
+        cls_loss = cls_loss_src.sum() / psm.shape[0]
+        conf_loss += cls_loss * self.cls_weight
 
-            reg_loss = 0
-        
-            # regression
-            rm = rm.permute(0, 2, 3, 1).contiguous()
-            rm = rm.view(rm.size(0), -1, 7)
-            targets = targets.view(targets.size(0), -1, 7)
-            box_preds_sin, reg_targets_sin = self.add_sin_difference(rm,
-                                                                    targets)
-            loc_loss_src =\
-                self.reg_loss_func(box_preds_sin,
-                                reg_targets_sin,
-                                weights=reg_weights)
-            reg_loss_ = loc_loss_src.sum() / rm.shape[0]
-            reg_loss_ *= self.reg_coe
-            reg_loss += reg_loss_
+        reg_loss = 0
+    
+        # regression
+        rm = rm.permute(0, 2, 3, 1).contiguous()
+        rm = rm.view(rm.size(0), -1, 7)
+        targets = targets.view(targets.size(0), -1, 7)
+        box_preds_sin, reg_targets_sin = self.add_sin_difference(rm,
+                                                                targets)
+        loc_loss_src =\
+            self.reg_loss_func(box_preds_sin,
+                            reg_targets_sin,
+                            weights=reg_weights)
+        reg_loss_ = loc_loss_src.sum() / rm.shape[0]
+        reg_loss_ *= self.reg_coe
+        reg_loss += reg_loss_
 
-            total_loss = reg_loss + conf_loss
+        #print(self.freeze_heads, 'freeze heads or not')
+        total_loss = (reg_loss + conf_loss) if not self.freeze_heads else 0
 
-            #if False:
-            total_loss += loss
-        else:
-            total_loss = loss
-            reg_loss = torch.zeros(1).cuda()
-            conf_loss = torch.zeros(1).cuda()
+        total_loss = (total_loss + loss) if self.args['module_delay'] else total_loss
 
         self.loss_dict.update({'total_loss': total_loss,
                                'reg_loss': reg_loss,

@@ -76,11 +76,12 @@ class MambaMultiPredictor(nn.Module):
 
         self.num_patches = (self.height // self.patch_size) * (self.width // self.patch_size)
         self.input_dim = self.input_channels * self.patch_size * self.patch_size
+        self.past_k = args.get('past_k', 4) + 1 # Number of past frames to use for prediction (if using pred token)
 
         # Patch embedding
         self.flatten = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
         self.embed = nn.Linear(self.input_dim, self.hidden_dim)
-        self.embed_norm = nn.RMSNorm(self.hidden_dim)
+        self.embed_norm = nn.RMSNorm(self.hidden_dim) if False else nn.Identity() 
         self.embed_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
 
         self.pos_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
@@ -137,8 +138,10 @@ class MambaMultiPredictor(nn.Module):
         B, T, C, H, W = x.shape
         x = einops.rearrange(x, 'b t c h w -> (b t) c h w')
         patches = self.flatten(x)  # [B*T, patch_dim, num_patches]
+        #print(f"Patch shape after flatten: {patches.shape}")
         patches = einops.rearrange(patches, 'bt pd np -> bt np pd')
         patches = self.embed(patches)  # [B*T, num_patches, hidden_dim]
+        #print(f"Patch shape after embedding: {patches.shape}")
         patches = self.embed_norm(patches)
         patches = self.embed_dropout(patches)
         patches = einops.rearrange(
@@ -244,9 +247,9 @@ if __name__ == '__main__':
         "input_channels":C,
         "height":H,
         "width":W,
-        "hidden_dim":512,
+        "hidden_dim":128,
         "patch_size":8,
-        "num_layers":6,
+        "num_layers":3,
         "d_state":64,
         "d_conv":4, 
         "use_bidirectional":True
@@ -260,10 +263,4 @@ if __name__ == '__main__':
     print(f"Output shape: {y[0].shape}")
     print(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     
-    # Multi-frame autoregressive prediction
-    auto_model = AutoregressivePredictor(
-        args
-    ).to("cuda")
     
-    y_multi = auto_model(x, num_future_frames=3)
-    print(f"\nAutoregressive output shape: {y_multi.shape}")

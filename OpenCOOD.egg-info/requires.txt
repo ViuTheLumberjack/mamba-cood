@@ -6,6 +6,8 @@ open3d<0.18.0
 torch==2.8.0
 opencv-python
 matplotlib
+mamba-ssm
+causal-conv1d
 scipy
 scikit-image
 tqdm

@@ -13,6 +13,7 @@ from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader, DistributedSampler
 from opencood.tools import train_utils, inference_utils
 from opencood.utils import eval_utils
+from opencood.models.delay import build_delay_module
 
 import opencood.hypes_yaml.yaml_utils as yaml_utils
 from opencood.tools import train_utils
@@ -30,17 +31,13 @@ import numpy as np
 def train_parser():
     parser = argparse.ArgumentParser(description="synthetic data generation")
     parser.add_argument("--hypes_yaml", type=str, default='opencood/hypes_yaml/point_pillar_v2xvit_delay.yaml', help='data generation yaml file needed ')
-    parser.add_argument('--model_dir',  help='Continued training path')
-    parser.add_argument('--name_yaml', default='config_training.yaml', help='name of yaml with parameters to train')
-    parser.add_argument("--half", action='store_true', default=True, help="whether train with half precision.")
-    parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
-    parser.add_argument('--info', type=str, default='prova123545', help='name of the experiment')
-    parser.add_argument('--mode', type=str, default='feature')
-    parser.add_argument('--split_dataset', type=str, default='validate')  #validate, test
-    parser.add_argument('--no_module_delay', action='store_true')  #False: no delay, True: delay
-    parser.add_argument('--forward_type', type=str, default='wo_backbone')  #wo_backbone: the feature is given by disk saved previously, classic: as the original
     parser.add_argument('--freeze_heads', type=bool, default=False) #False: train the heads, True: freeze the heads
+    parser.add_argument('--model_dir',  help='Continued training path')
+    parser.add_argument('--mode', type=str, default='feature')
+    parser.add_argument('--split_dataset', type=str, default='test')  #validate, test
+    parser.add_argument('--forward_type', type=str, default='wo_backbone')  #wo_backbone: the feature is given by disk saved previously, classic: as the original
     parser.add_argument('--len_past', type=str, default=4)  #validate, test
+    parser.add_argument('--info', type=str, default='') 
 
     parser.add_argument('--global_sort_detections', action='store_true',
                     help='whether to globally sort detections by confidence score.'
@@ -50,14 +47,14 @@ def train_parser():
     return opt
 
 
-def show_pred_gt(output_dict, batch_data, global_iteration):
+def show_pred_gt(predictions, batch_data, global_iteration):
     # print('ok')
     choose_ex = 0
     record_len = batch_data['ego']['record_len'][choose_ex]
     id_data =  batch_data['ego']['id_data'][choose_ex]
     feature_base = batch_data['ego']['current_features'][:record_len]
     # feature_residual = output_dict['feature_residual'][choose_ex][:record_len]
-    preds = output_dict['predictions'][:record_len]
+    preds = predictions[:record_len]
     gts = batch_data['ego']['gt_features'][:record_len]
     # mask = output_dict['mask'][choose_ex][:record_len]
     time_delay = batch_data['ego']['time_delay'][choose_ex][:record_len]
@@ -141,10 +138,8 @@ def main():
     hypes['mode'] = opt.mode
     hypes['split_dataset'] = opt.split_dataset
     hypes['validate_dir'] = '/equilibrium/datasets/V2X/v2xset/validate'
-    hypes['module_delay'] = not opt.no_module_delay
-    print('Using delay module? {}'.format(not opt.no_module_delay))
+    hypes['len_past'] = hypes['model']['args']['module_delay']['args']['past_k']
     hypes['freeze_heads'] = opt.freeze_heads
-    hypes['len_past'] = opt.len_past
     info = opt.info
 
     if sys.gettrace() is not None:
@@ -165,61 +160,36 @@ def main():
     opencood_train_dataset = build_dataset(hypes, visualize=False, train=True)
     opencood_validate_dataset = build_dataset(hypes, visualize=False, train=False)
 
-    if opt.distributed:
-        sampler_train = DistributedSampler(opencood_train_dataset)
-        sampler_val = DistributedSampler(opencood_validate_dataset, shuffle=False)
-
-        batch_sampler_train = torch.utils.data.BatchSampler(sampler_train, hypes['train_params']['batch_size'], drop_last=True)
-
-        train_loader = DataLoader(opencood_train_dataset,
-                                  batch_sampler=batch_sampler_train,
-                                  num_workers=num_workers,
-                                  collate_fn=opencood_train_dataset.collate_batch_train)
-        val_loader = DataLoader(opencood_validate_dataset,
-                                sampler=sampler_val,
-                                num_workers=num_workers,
-                                collate_fn=opencood_train_dataset.collate_batch_test,
-                                drop_last=False)
-    else:
-        train_loader = DataLoader(opencood_train_dataset,
-                                  batch_size=hypes['train_params']['batch_size'],
-                                  num_workers=num_workers,   #8
-                                  collate_fn=opencood_train_dataset.collate_batch_train,
-                                  shuffle=True,
-                                  pin_memory=False,
-                                  drop_last=True)
-        val_loader = DataLoader(opencood_validate_dataset,
+    
+    train_loader = DataLoader(opencood_train_dataset,
                                 batch_size=1,
-                                num_workers=num_workers,    #
-                                collate_fn=opencood_train_dataset.collate_batch_test,
-                                shuffle=False,
+                                num_workers=num_workers,   #8
+                                collate_fn=opencood_train_dataset.collate_batch_train,
+                                shuffle=True,
                                 pin_memory=False,
                                 drop_last=True)
+    val_loader = DataLoader(opencood_validate_dataset,
+                            batch_size=1,
+                            num_workers=num_workers,    #
+                            collate_fn=opencood_train_dataset.collate_batch_test,
+                            shuffle=False,
+                            pin_memory=False,
+                            drop_last=True)
+    
 
     print('---------------Creating Model------------------')
-    model = train_utils.create_model(hypes, module_delay=(not opt.no_module_delay))
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    model = build_delay_module(hypes["model"]["args"]["module_delay"])
 
-    # if we want to train from last checkpoint.
-    if opt.model_dir:
-        saved_path = opt.model_dir
-        init_epoch, model = train_utils.load_saved_model(saved_path, model)
-    else:
-        init_epoch = 0
-        # if we train the model from scratch, we need to create a folder
-        # to save the model,
-        saved_path = train_utils.setup_train(hypes)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # we assume gpu is necessary
     if torch.cuda.is_available():
         model.to(device)
     model_without_ddp = model
 
-    if opt.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[opt.gpu], find_unused_parameters=True)
-        model_without_ddp = model.module
-
     # define the loss
+    hypes['loss']['core_method'] = 'temporal_consistency_loss' #'feature_map_prediction_loss' 
     criterion = train_utils.create_loss(hypes)
 
     # optimizer setup
@@ -230,17 +200,13 @@ def main():
 
     info_name = opt.info
     # dict_args = vars(self.args)
-    wandb.init(project='opencood', notes="", name=info_name, save_code=True, mode=mode_wandb, config=hypes)
+    wandb.init(project='opencood_debug', notes="", name=info_name, save_code=True, mode=mode_wandb, config=hypes)
     wandb.define_metric("epoch")
     wandb.define_metric("it")
     wandb.define_metric("train/*", step_metric="it")
     wandb.define_metric("val/*", step_metric="epoch")
 
     ###########################################
-
-    # half precision training
-    if opt.half:
-        scaler = torch.amp.GradScaler('cuda')
 
     print('Training start')
     epoches = hypes['train_params']['epoches']
@@ -250,7 +216,7 @@ def main():
     ap_70_best = 0.0
     first_epoch = False
     #save opt parameters in local disk
-    saved_path_dir = os.path.join(saved_path, 'TRAININGS')
+    saved_path_dir = "opencood/debug/TRAININGS"
     #create folder
     if not os.path.exists(os.path.join(saved_path_dir, info)):
         os.makedirs(os.path.join(saved_path_dir, info))
@@ -261,12 +227,10 @@ def main():
         yaml.dump(vars(opt), outfile, default_flow_style=False)
     
 
-    for epoch in range(init_epoch, max(epoches, init_epoch)):
+    for epoch in range(0, max(epoches, 50)):
         print('epoch %d' % epoch)
         if first_epoch == False:
-            if opt.distributed:
-                sampler_train.set_epoch(epoch)
-                
+                            
             for param_group in optimizer.param_groups:
                 print('learning rate updated to %.7f' % param_group["lr"])
             #wandb for lr
@@ -282,7 +246,12 @@ def main():
                 model.zero_grad()
                 optimizer.zero_grad()
 
-                batch_data = train_utils.to_device(batch_data, device)
+                data_dict = train_utils.to_device(batch_data, device)
+
+                feature_saved = data_dict['ego']['current_features']  
+                past_feature = data_dict['ego']['past_features']      
+                total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
+
 
                 # case1 : late fusion train --> only ego needed,
                 # and ego is random selected
@@ -290,44 +259,30 @@ def main():
                 # case3 : intermediate fusion --> ['ego']['processed_lidar']
                 # becomes a list, which containing all data from other cavs
                 # as well
-                if not opt.half:
-                    ouput_dict = model.forward_feature_wo_backbone(batch_data['ego'])
-                    # first argument is always your output dictionary,
-                    # second argument is always your label dictionary.
-                    final_loss = criterion(ouput_dict, batch_data)
-                    # final_loss = criterion(ouput_dict, batch_data) 
-                else:
-                    with torch.amp.autocast('cuda'):
-                        ouput_dict = model.forward_feature_wo_backbone(batch_data['ego'])
-                        final_loss = criterion(ouput_dict, batch_data) 
-                
+                feature_pred, intermediate_preds = model(total_feature)
+
+                final_loss = criterion(feature_pred, intermediate_preds, data_dict)
+            
                 #set in wandb
                 loss_feature = criterion.loss_dict['loss_feature']
-                conf_loss = criterion.loss_dict['conf_loss']
-                reg_loss = criterion.loss_dict['reg_loss']
-                wandb.log({"train/loss": final_loss.item(), "it": global_iteration})
-                wandb.log({"train/loss_feature": loss_feature.item(), "it": global_iteration})
-                wandb.log({"train/conf_loss": conf_loss.item(), "it": global_iteration})
-                wandb.log({"train/reg_loss": reg_loss.item(), "it": global_iteration})
+                mu = criterion.loss_dict['predictions_mean']
+                std = criterion.loss_dict['predictions_std']
+                wandb.log({"loss_feature": loss_feature.item(), 
+                           "it": global_iteration})
+                wandb.log({"predictions_mean": mu.item(), "it": global_iteration})
+                wandb.log({"predictions_std": std.item(), "it": global_iteration})
 
                 #show in wandb the 2d feature maps: current -> pred - gt
-                if global_iteration % 200 == 0:
-                    show_pred_gt(ouput_dict, batch_data, global_iteration)
+                if global_iteration % 400 == 0:
+                    show_pred_gt(intermediate_preds, batch_data, global_iteration)
 
                 criterion.logging(epoch, i, len(train_loader), pbar=pbar2)
                 pbar2.update(1)
 
-                if not opt.half:
-                    final_loss.backward()
-                    optimizer.step()
-                else:
-                    scaler.scale(final_loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-
-                if hypes['lr_scheduler']['core_method'] == 'cosineannealwarm':
-                    scheduler.step_update(epoch * num_steps + 0)
-
+                
+                final_loss.backward()
+                optimizer.step()
+                
                 global_iteration += 1
 
             if hypes['lr_scheduler']['core_method'] != 'cosineannealwarm':
@@ -345,11 +300,7 @@ def main():
             valid_ave_loss = []
             # Create the dictionary for evaluation.
             # also store the confidence score for each prediction
-            result_stat = {0.3: {'tp': [], 'fp': [], 'gt': 0, 'score': []},                
-                        0.5: {'tp': [], 'fp': [], 'gt': 0, 'score': []},                
-                        0.7: {'tp': [], 'fp': [], 'gt': 0, 'score': []}}
-
-
+            
             with torch.no_grad():
                 for i, batch_data in tqdm.tqdm(enumerate(val_loader)):
                     print('validation step %d' % i)
@@ -358,37 +309,15 @@ def main():
                     batch_data = train_utils.to_device(batch_data, device)
                     # ouput_dict, pred_box_tensor, pred_score, gt_box_tensor = model.forward_feature_wo_backbone(batch_data['ego'])
 
-                    ouput_dict, pred_box_tensor, pred_score, gt_box_tensor = inference_utils.inference_intermediate_fusion(batch_data,
-                                                                                        model,
-                                                                                        opencood_validate_dataset,
-                                                                                        forward_type=opt.forward_type)
+                    data_dict = train_utils.to_device(batch_data, device)
 
+                    feature_saved = data_dict['ego']['current_features']  
+                    past_feature = data_dict['ego']['past_features']      
+                    total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
+                    feature_pred, intermediate_preds = model(total_feature)
 
-                    final_loss = criterion(ouput_dict['ego'], batch_data) 
+                    final_loss = criterion(feature_pred, intermediate_preds, data_dict) 
                     valid_ave_loss.append(final_loss.item())
-
-                    #new
-                    eval_utils.caluclate_tp_fp(pred_box_tensor, pred_score, gt_box_tensor, result_stat, 0.3)
-                    eval_utils.caluclate_tp_fp(pred_box_tensor, pred_score, gt_box_tensor, result_stat, 0.5)
-                    eval_utils.caluclate_tp_fp(pred_box_tensor, pred_score, gt_box_tensor, result_stat, 0.7)
-                    
-                ap_30, ap_50, ap_70 = eval_utils.eval_final_results(result_stat,opt.model_dir, opt.global_sort_detections, get_result=True)
-                print('The Average Precision at IOU 0.3 is %.3f, '
-                'The Average Precision at IOU 0.5 is %.3f, '
-                'The Average Precision at IOU 0.7 is %.3f' % (ap_30, ap_50, ap_70))
-
-                #log in wandb
-                wandb.log({"val/ap_30": ap_30, "epoch": epoch})
-                wandb.log({"val/ap_50": ap_50, "epoch": epoch})
-                wandb.log({"val/ap_70": ap_70, "epoch": epoch})
-
-                if ap_70 > ap_70_best:
-                    ap_70_best = ap_70
-                    print('The best Average Precision at IOU 0.7 is %.3f' % (ap_70_best))
-                    # save the model
-                    torch.save(model_without_ddp.state_dict(),
-                        os.path.join(saved_path_dir, info, 'best_net.pth'))
-                    # wandb.save(os.path.join(saved_path, info, 'best_net.pth'))
 
             valid_ave_loss = statistics.mean(valid_ave_loss)
             print('At epoch %d, the validation loss is %f' % (epoch, valid_ave_loss))

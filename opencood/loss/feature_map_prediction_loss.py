@@ -1,0 +1,184 @@
+# -*- coding: utf-8 -*-
+# Author: OpenPCDet, Runsheng Xu <rxx3386@ucla.edu>
+# License: TDG-Attribution-NonCommercial-NoDistrib
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from einops import einops
+
+
+class WeightedSmoothL1Loss(nn.Module):
+    """
+    Code-wise Weighted Smooth L1 Loss modified based on fvcore.nn.smooth_l1_loss
+    https://github.com/facebookresearch/fvcore/blob/master/fvcore/nn/smooth_l1_loss.py
+                  | 0.5 * x ** 2 / beta   if abs(x) < beta
+    smoothl1(x) = |
+                  | abs(x) - 0.5 * beta   otherwise,
+    where x = input - target.
+    """
+    def __init__(self, beta: float = 1.0 / 9.0, code_weights: list = None):
+        """
+        Args:
+            beta: Scalar float.
+                L1 to L2 change point.
+                For beta values < 1e-5, L1 loss is computed.
+            code_weights: (#codes) float list if not None.
+                Code-wise weights.
+        """
+        super(WeightedSmoothL1Loss, self).__init__()
+        self.beta = beta
+        if code_weights is not None:
+            self.code_weights = np.array(code_weights, dtype=np.float32)
+            self.code_weights = torch.from_numpy(self.code_weights).cuda()
+
+    @staticmethod
+    def smooth_l1_loss(diff, beta):
+        if beta < 1e-5:
+            loss = torch.abs(diff)
+        else:
+            n = torch.abs(diff)
+            loss = torch.where(n < beta, 0.5 * n ** 2 / beta, n - 0.5 * beta)
+
+        return loss
+
+    def forward(self, input: torch.Tensor,
+                target: torch.Tensor, weights: torch.Tensor = None):
+        """
+        Args:
+            input: (B, #anchors, #codes) float tensor.
+                Ecoded predicted locations of objects.
+            target: (B, #anchors, #codes) float tensor.
+                Regression targets.
+            weights: (B, #anchors) float tensor if not None.
+
+        Returns:
+            loss: (B, #anchors) float tensor.
+                Weighted smooth l1 loss without reduction.
+        """
+        target = torch.where(torch.isnan(target), input, target)  # ignore nan targets
+
+        diff = input - target
+        loss = self.smooth_l1_loss(diff, self.beta)
+
+        # anchor-wise weighting
+        if weights is not None:
+            assert weights.shape[0] == loss.shape[0] and weights.shape[1] == loss.shape[1]
+            loss = loss * weights.unsqueeze(-1)
+
+        return loss
+
+class FeatureMapPredictionLoss(nn.Module):
+    def __init__(self, args):
+        super(FeatureMapPredictionLoss, self).__init__()
+        self.reg_loss_func = WeightedSmoothL1Loss()
+        self.alpha = 0.25
+        self.gamma = 2.0
+        self.args = args
+        self.freeze_heads = args['freeze_heads']
+
+        self.cls_weight = args['cls_weight'] # lamda cls
+        self.reg_coe = args['reg'] # lamda reg
+        self.delay_beta = args['delay']
+        self.delay_coeff = args.get('delay_coeff', 1.0) # lamda delay
+        self.loss_dict = {}
+
+    def delay_loss(self, output, target):
+        """
+        Parameters
+        ----------
+        output : torch.Tensor size (T, B, C, H, W)
+        target : torch.Tensor size (T, B, C, H, W)
+
+        Returns
+        -------
+        loss : float
+        """
+        def charbonnier_loss(x, epsilon=1e-6):
+            return torch.sqrt(x * x + epsilon)
+        
+        #diff = output - target
+        #loss = charbonnier_loss(diff, self.delay_beta)
+        loss = F.l1_loss(output, target, reduction='none')
+
+        return loss 
+
+    def forward(self, feature_pred, predictions, target_dict):
+        """
+        Parameters
+        ----------
+        output_dict : dict
+        target_dict : dict
+        """
+        
+        target_dict_copy = target_dict.copy()
+        target_dict = target_dict['ego']['label_dict']
+        #added loss
+        past = target_dict_copy['ego']['past_features']
+        current = target_dict_copy['ego']['current_features']
+        feature_gt = target_dict_copy['ego']['gt_features']
+        record_len = target_dict_copy['ego']['record_len']
+        ego_list = target_dict_copy['ego']['ego_list']
+        
+        loss = 0
+        # for i in range(len(record_len)):
+        # ego_flag = torch.Tensor(ego_list[0])
+        # from 0 to 1, and from 1 to 0
+        # ego_flag = torch.where(ego_flag == 0, 1, 0)
+
+        pred = predictions #[:, i]
+        gt = feature_gt #[:, i]
+
+        delay_loss = self.delay_loss(pred, gt)
+
+        # ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(0).repeat(delay_loss.shape[0], 1, delay_loss.shape[2], delay_loss.shape[3], delay_loss.shape[4]).cuda()
+        # print(ego_flag.shape, delay_loss.shape)
+
+        # try:
+        #    delay_loss = delay_loss * ego_flag
+        # except:
+        #    print('error in l1 loss')
+        # delay_loss = delay_loss.sum() / (ego_flag.sum() + 1e-6)
+
+        loss += delay_loss.mean()
+
+        loss = loss / len(record_len)
+        loss *= self.delay_coeff
+        
+        self.loss_dict.update({
+                               'loss_feature': loss, 
+                               'predictions_mean': predictions.mean(),
+                               'predictions_std': predictions.std()
+                               })
+
+        return loss
+
+    def logging(self, epoch, batch_id, batch_len, writer=None, pbar=None):
+        """
+        Print out  the loss function for current iteration.
+
+        Parameters
+        ----------
+        epoch : int
+            Current epoch for training.
+        batch_id : int
+            The current batch.
+        batch_len : int
+            Total batch length in one iteration of training,
+        writer : SummaryWriter
+            Used to visualize on tensorboard
+        """
+        pred_loss = self.loss_dict['loss_feature']
+        mu = self.loss_dict['predictions_mean']
+        std = self.loss_dict['predictions_std']
+        if pbar is None:
+            print("[epoch %d][%d/%d], || Loss: %.4f || %.4f - %.4f" % (
+                    epoch, batch_id + 1, batch_len,
+                    pred_loss.item(), mu.item(), std.item()))
+        else:
+            pbar.set_description("[epoch %d][%d/%d], || Loss: %.4f || %.4f - %.4f" % (
+                    epoch, batch_id + 1, batch_len,
+                    pred_loss.item(), mu.item(), std.item()))
+                

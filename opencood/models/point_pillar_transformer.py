@@ -1,3 +1,4 @@
+from einops import einops
 import torch
 import torch.nn as nn
 import os
@@ -41,6 +42,7 @@ class PointPillarTransformer(nn.Module):
                                     voxel_size=args['voxel_size'],
                                     point_cloud_range=args['lidar_range'])
         self.scatter = PointPillarScatter(args['point_pillar_scatter'])
+        print(args['point_pillar_scatter'])
         self.backbone = BaseBEVBackbone(args['base_bev_backbone'], 64)
         # used to downsample the feature map for efficient computation
         self.shrink_flag = False
@@ -62,14 +64,18 @@ class PointPillarTransformer(nn.Module):
 
         self.exclude_ego = args.get('exclude_ego', False)
 
-        self.module_delay_flag = args['module_delay']
-        if self.module_delay_flag:
+        self.module_delay_flag = False
+        if 'delay' in args:
+            print('Using delay module: {}'.format(args['delay']['core_method']))
             self.module_delay = opencood.models.delay.build_delay_module(
                 args['delay']
             )
 
+            self.module_delay_flag = True
+
         # not enough memory
         self.all_preds = False #len(args['delay']['args']['future_delay_list']) > 1
+        self.residual_delay = args.get('residual_delay', False)
         
         self.timings = [] 
 
@@ -123,8 +129,7 @@ class PointPillarTransformer(nn.Module):
         prior_encoding = data_dict['prior_encoding'].unsqueeze(-1).unsqueeze(-1)
 
         # read from saved feature
-        feature_saved = data_dict['current_features']
-        
+        feature_saved = data_dict['current_features']  
         
         if self.module_delay_flag:
             # filter the ego vehicle out
@@ -149,13 +154,20 @@ class PointPillarTransformer(nn.Module):
             #for t in range(predictions.shape[0]):
             #    predictions[t] = predictions[t] + res
             #    res = predictions[t] 
-            feature_encoded = feature_encoded + feature_saved
-            predictions = predictions + feature_saved.unsqueeze(0).repeat(predictions.shape[0], 1, 1, 1, 1)
+            
+            if self.residual_delay: 
+                compensated_features = feature_encoded + feature_saved
+                predictions = predictions + feature_saved.unsqueeze(0).repeat(predictions.shape[0], 1, 1, 1, 1)
+            else:
+                compensated_features = feature_encoded
+                predictions = predictions
+            
         else:
-            feature_encoded = feature_saved
-            predictions = feature_encoded.unsqueeze(0)
+            compensated_features = feature_saved
+            predictions = feature_saved.unsqueeze(0)
 
-        
+        feature_encoded = compensated_features.detach()
+
         spatial_features_2d = self.naive_compressor.decoder(feature_encoded)
         regroup_feature, mask = regroup(spatial_features_2d, record_len, self.max_cav)
         

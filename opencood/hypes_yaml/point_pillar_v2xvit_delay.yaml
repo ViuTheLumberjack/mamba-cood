@@ -142,7 +142,7 @@ model:
 
       # add decoder later
 
-    delay:
+    module_delay:
       core_method: Mamba
       args:
         input_channels: 8

@@ -14,6 +14,8 @@ Requires-Dist: open3d<0.18.0
 Requires-Dist: torch==2.8.0
 Requires-Dist: opencv-python
 Requires-Dist: matplotlib
+Requires-Dist: mamba-ssm
+Requires-Dist: causal-conv1d
 Requires-Dist: scipy
 Requires-Dist: scikit-image
 Requires-Dist: tqdm
