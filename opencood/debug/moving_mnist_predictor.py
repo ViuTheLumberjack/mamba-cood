@@ -625,7 +625,6 @@ if __name__ == '__main__':
             
             prediction, intermediate = model(inputs)  # prediction shape: [batch, K, 1, 64, 64]
 
-            intermediate = einops.rearrange(intermediate, 'b t c h w -> t b c h w')  # [1, batch, 1, 64, 64]
             final_loss = criterion(intermediate, targets) * loss_coefficient
 
             if (batch_idx + 1) % 25 == 0:
@@ -653,7 +652,7 @@ if __name__ == '__main__':
                 targets = targets.to(device)
 
                 feature_pred, intermediate_preds = model(inputs)
-                intermediate_preds = einops.rearrange(intermediate_preds, 'b t c h w -> t b c h w')  # [1, batch, 1, 64, 64]
+                
                 final_loss = criterion(intermediate_preds, targets) * loss_coefficient
                 valid_ave_loss.append(final_loss.item())
 
