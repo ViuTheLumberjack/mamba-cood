@@ -120,7 +120,6 @@ class FeatureMapPredictionLoss(nn.Module):
         current = target_dict_copy['ego']['current_features']
         feature_gt = target_dict_copy['ego']['gt_features']
         record_len = target_dict_copy['ego']['record_len']
-        ego_list = target_dict_copy['ego']['ego_list']
         
         loss = 0
         # for i in range(len(record_len)):

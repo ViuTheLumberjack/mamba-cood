@@ -68,6 +68,7 @@ class MambaMultiPredictor(nn.Module):
         self.expand = args.get('expand', 2)
         self.use_bidirectional = args.get('use_bidirectional', False)
         self.dropout_rate = args.get('dropout', 0.0)
+        self.residual_connection = args.get('residual', True) 
 
         self.prediction_horizon = args.get('future_delay', 0)
         self.prediction_horizon_list = args.get('future_delay_list', [0])
@@ -85,7 +86,6 @@ class MambaMultiPredictor(nn.Module):
         self.embed_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
 
         self.pos_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
-
         # Learnable positional encodings
         # Combined spatiotemporal encoding
         self.spatiotemporal_pos = nn.Parameter(
@@ -175,8 +175,10 @@ class MambaMultiPredictor(nn.Module):
         
         # Add prediction token at the end
         num_pred_tokens = self.num_future_preds * self.num_patches
-        #pred_tokens = self.pred_token.expand(B, -1, -1)
-        #seq = torch.cat([seq, pred_tokens], dim=1)
+        pred_tokens = self.pred_token.expand(B, -1, -1)
+        #print(f"Sequence shape before adding pred token: {seq.shape}")
+        #print(f"Prediction token shape: {pred_tokens.shape}")
+        seq = torch.cat([seq, pred_tokens], dim=1)
         
         # Process through Mamba2 blocks
         for block in self.blocks:
@@ -200,8 +202,14 @@ class MambaMultiPredictor(nn.Module):
 
             preds.append(pred_frame)
         
-        preds = torch.stack(preds, dim=0)  # [num_future_preds, B, C, H, W]
-        feat_enc = preds[self.prediction_horizon_idx]  # [B, C, H, W]
+        preds = torch.stack(preds, dim=1)  # [num_future_preds, B, C, H, W]
+        
+        if self.residual_connection:
+            # Add residual connection from last input frame
+            last_frame = x[:, -1]  # [B, C, H, W]
+            preds = preds + last_frame.unsqueeze(0)  # Broadcast to all predictions
+
+        feat_enc = preds[:, self.prediction_horizon_idx]  # [B, C, H, W]
         
         return feat_enc, preds
 

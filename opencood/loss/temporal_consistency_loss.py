@@ -149,7 +149,6 @@ class TemporalConsistencyLoss(nn.Module):
         feature_gt = target_dict_copy['ego']['gt_features']
         feature_gt = einops.rearrange(feature_gt, 't b c h w -> b t c h w') 
 
-        record_len = target_dict_copy['ego']['record_len']
         # print("Past shape:", past.shape)
         # print("Current shape:", current.shape)
         # print("GT shape:", feature_gt.shape)
