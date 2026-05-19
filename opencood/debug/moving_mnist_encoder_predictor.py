@@ -11,9 +11,15 @@ import opencood.hypes_yaml.yaml_utils as yaml_utils
 
 from opencood.tools import train_utils
 
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from opencood.models.delay import build_delay_module
+import matplotlib.pyplot as plt
 
+from mamba_ssm import Mamba
+
+torch.manual_seed(42)
+np.random.seed(42)
 
 # -------------- SSIM and MS-SSIM implementation from https://github.com/VainF/pytorch-msssim/blob/master/pytorch_msssim/ssim.py --------------
 import warnings
@@ -22,6 +28,8 @@ from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+
+BASE_PATH = "/equilibrium/students/svatamanelu/"
 
 
 def _fspecial_gauss_1d(size: int, sigma: float) -> Tensor:
@@ -351,14 +359,19 @@ def parse_args():
     parser.add_argument('--residual', action=argparse.BooleanOptionalAction, help='Whether to use residual connection')
     parser.add_argument('--bidirectional', action=argparse.BooleanOptionalAction, help='Use bidirectional Mamba blocks')
     parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension for Mamba blocks')
-    parser.add_argument('--loss', type=str, default='l1', help='Loss function to use')
     parser.add_argument('--layers', type=int, default=5, help='Number of Mamba blocks to use')
 
+    parser.add_argument('--loss', type=str, default='l1', help='Loss function to use')
     parser.add_argument('--loss_coefficient', type=float, default=1.0, help='Coefficient for the loss function')
     parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs')
+    parser.add_argument('--save_ckpt', action='store_true', help='Save checkpoint during training')
 
+    parser.add_argument('--encoder', type=str, help='Whether to use a convolutional based encoder before the prediction model, currently supported options are "mamba" for a full Mamba encoder, "mambaglu" for a mamba encoder with Gated Linear Units, "convglu" for a convolutional encoder with Gated Linear Units, and "conv" for a simple convolutional encoder')
     parser.add_argument('--encoder_layers', type=int, default=3, help='Number of layers in the encoder')
     parser.add_argument('--encoder_hidden_dim', type=int, default=128, help='Hidden dimension for the encoder')
+    
+    #parser.add_argument('--mamba_decoder', action="store_true", help='Whether to use a convolutional based decoder after the prediction model')
+    
     args = parser.parse_args()
     return args
 
@@ -538,19 +551,189 @@ class Decoder(torch.nn.Module):
         x = einops.rearrange(x, '(b t) c h w -> b t c h w', b=B)
         return x
 
+class DWConv(torch.nn.Module):
+    def __init__(self, dim=768):
+        super(DWConv, self).__init__()
+        self.dwconv = torch.nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, bias=True, groups=dim)
+
+    def forward(self, x, H, W):
+        B, N, C = x.shape
+        x = x.transpose(1, 2).view(B, C, H, W).contiguous()
+        x = self.dwconv(x)
+        x = x.flatten(2).transpose(1, 2)
+
+        return x
+
+class ConvolutionalGLU(torch.nn.Module):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=torch.nn.GELU, drop=0.):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        hidden_features = int(2 * hidden_features / 3)
+        self.fc1 = torch.nn.Linear(in_features, hidden_features * 2)
+        self.dwconv = DWConv(hidden_features)
+        self.act = act_layer()
+        self.fc2 = torch.nn.Linear(hidden_features, out_features)
+        self.drop = torch.nn.Dropout(drop)
+
+    def forward(self, x, H, W):
+        x, v = self.fc1(x).chunk(2, dim=-1)
+        x = self.act(self.dwconv(x, H, W)) * v
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        
+        return x
+
+class OverlapPatchEmbed(torch.nn.Module):
+    """ Image to Patch Embedding
+    """
+
+    def __init__(self, patch_size=7, stride=4, in_chans=3, embed_dim=768):
+        super().__init__()
+
+        patch_size = (patch_size, patch_size) if isinstance(patch_size, int) else patch_size
+
+        assert max(patch_size) > stride, "Set larger patch_size than stride"
+        self.proj = torch.nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=stride,
+                              padding=(patch_size[0] // 2, patch_size[1] // 2))
+        self.norm = torch.nn.LayerNorm(embed_dim)
+
+    def forward(self, x, H=None, W=None):
+        x = self.proj(x)
+        _, _, H, W = x.shape
+        x = einops.rearrange(x, 'b c h w -> b (h w) c')
+        x = self.norm(x)
+        x = einops.rearrange(x, 'b (h w) c -> b c h w', h=H, w=W)
+
+        return x
+
+class SpatioChannelMixer(torch.nn.Module):
+    def __init__(self, spatial_mixer, channel_mixer, hidden_dim, norm=torch.nn.LayerNorm, drop=0., size=16):
+        super().__init__()
+        self.spatial_mixer = spatial_mixer
+        self.channel_mixer = channel_mixer
+        self.norm = norm([hidden_dim, size, size])
+        self.drop = torch.nn.Dropout(drop)
+
+    def forward(self, x):
+        B, T, C, H, W = x.shape
+        y = self.norm(x)
+
+        if isinstance(self.spatial_mixer, Conv2DBlock):
+            y = einops.rearrange(y, 'b t c h w -> (b t) c h w', b=B)
+        elif isinstance(self.spatial_mixer, Mamba):
+            y = einops.rearrange(y, 'b t c h w -> (b t) (h w) c', b=B, h=H, w=W)
+
+        y = self.spatial_mixer(y)
+
+        if isinstance(self.spatial_mixer, Conv2DBlock):
+            y = einops.rearrange(y, '(b t) c h w -> b t c h w', b=B)
+        elif isinstance(self.spatial_mixer, Mamba):
+            y = einops.rearrange(y, '(b t) (h w) c -> b t c h w', b=B, t=T, h=H, w=W)
+
+        y = self.drop(y)
+        x = x + y
+
+        z = self.norm(x)
+        z = einops.rearrange(z, 'b t c h w -> (b t) (h w) c')
+        z = self.channel_mixer(z, H, W)
+        z = self.drop(z)
+        z = einops.rearrange(z, '(b t) (h w) c -> b t c h w', b=B, h=H, w=W)
+        x = x + z
+        
+        return x
+
+class ConvGLUEncoder(torch.nn.Module):
+    def __init__(self, in_channels=1, hidden_dim=256, layers=3):
+        super(ConvGLUEncoder, self).__init__()
+        self.in_channels = in_channels
+        self.hidden_dim = hidden_dim
+        self.layers = layers
+
+        self.patch_embed = OverlapPatchEmbed(patch_size=3, stride=2, in_chans=self.in_channels, embed_dim=self.hidden_dim)
+
+        self.arch = torch.nn.ModuleList()
+
+        for i in range(self.layers):
+            in_features = self.hidden_dim 
+            out_features = self.hidden_dim 
+            size = 32 // (2 ** i)
+            self.arch.append(
+                SpatioChannelMixer(
+                    hidden_dim=hidden_dim,
+                    size=size,
+                    spatial_mixer=Conv2DBlock(in_features, out_features, kernel_size=(3, 3), stride=1, padding=1),
+                    channel_mixer=ConvolutionalGLU(out_features, out_features),
+                )
+            )
+            self.arch.append(einops.layers.torch.Rearrange('b t c h w -> (b t) c h w'))
+            self.arch.append(OverlapPatchEmbed(patch_size=3, stride=2, in_chans=in_features, embed_dim=out_features))
+            self.arch.append(einops.layers.torch.Rearrange('(b t) c h w -> b t c h w', t=5))
+
+    def forward(self, x, H=None, W=None):
+        # x: [B, T_in, C, H, W]
+        B, T, C, H, W = x.shape
+        x = einops.rearrange(x, 'b t c h w -> (b t) c h w')
+        x = self.patch_embed(x)
+        x = einops.rearrange(x, '(b t) c hh hw -> b t c hh hw', b=B, t=T)
+
+        for layer in self.arch:
+            x = layer(x)
+
+        return x
+
+class MambaGLUEncoder(torch.nn.Module):
+    def __init__(self, in_channels=1, hidden_dim=256, layers=3):
+        super(MambaGLUEncoder, self).__init__()
+        self.in_channels = in_channels
+        self.hidden_dim = hidden_dim
+        self.layers = layers
+
+        self.patch_embed = OverlapPatchEmbed(patch_size=3, stride=2, in_chans=self.in_channels, embed_dim=self.hidden_dim)
+
+        self.arch = torch.nn.ModuleList()
+
+        for i in range(self.layers):
+            in_features = self.hidden_dim 
+            out_features = self.hidden_dim 
+            self.arch.append(
+                SpatioChannelMixer(
+                    hidden_dim=hidden_dim,
+                    size=32 // (2 ** i),
+                    spatial_mixer=Mamba(d_model=in_features, d_state=64, d_conv=4, expand=2),
+                    channel_mixer=ConvolutionalGLU(in_features, in_features),
+                )
+            )
+            self.arch.append(einops.layers.torch.Rearrange('b t c h w -> (b t) c h w'))
+            self.arch.append(OverlapPatchEmbed(patch_size=3, stride=2, in_chans=in_features, embed_dim=out_features))
+            self.arch.append(einops.layers.torch.Rearrange('(b t) c h w -> b t c h w', t=5))
+
+    def forward(self, x, H=None, W=None):
+        # x: [B, T_in, C, H, W]
+        B, T, C, H, W = x.shape
+        x = einops.rearrange(x, 'b t c h w -> (b t) c h w')
+        x = self.patch_embed(x)
+        x = einops.rearrange(x, '(b t) c hh hw -> b t c hh hw', b=B, t=T)
+
+        for layer in self.arch:
+            x = layer(x)
+
+        return x
+
 if __name__ == '__main__':
     args = parse_args()
     print(args)
 
     res_string = 'residual' if args.residual else 'no_residual'
     bidir_string = 'bidirectional' if args.bidirectional else 'unidirectional'
-    save_path = f"/home/svatamanelu/moving_mnist/encoder_{str(args.encoder_hidden_dim)}_{str(args.encoder_layers)}_{args.loss}_{str(args.loss_coefficient)}_{res_string}_{bidir_string}_{str(args.layers)}_{str(args.hidden_dim)}_predictor_results"
+    save_path = os.path.join(BASE_PATH, f"moving_mnist/encoder_{str(args.encoder)}_{str(args.encoder_hidden_dim)}_{str(args.encoder_layers)}_{args.loss}_{str(args.loss_coefficient)}_{res_string}_{bidir_string}_{str(args.layers)}_{str(args.hidden_dim)}_predictor_results")
     os.makedirs(save_path, exist_ok=True)
 
-    dataset_train = MovingMNIST(root='/home/svatamanelu/mnist_test_seq.npy', is_train=True)
+    dataset_train = MovingMNIST(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=True)
     train_loader = DataLoader(dataset_train, batch_size=32, shuffle=True)
 
-    dataset_test = MovingMNIST(root='/home/svatamanelu/mnist_test_seq.npy', is_train=False)
+    dataset_test = MovingMNIST(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=False)
     test_loader = DataLoader(dataset_test, batch_size=1, shuffle=True)
 
     delay_config = {
@@ -560,8 +743,8 @@ if __name__ == '__main__':
             'future_delay_list': [100, 200, 300, 400, 500],
             'past_k': 5,
             'input_channels': args.encoder_hidden_dim,  # the output channel dimension of the encoder
-            'height': 64 // (2 ** (args.encoder_layers)),
-            'width': 64 // (2 ** (args.encoder_layers)),
+            'height': 64 // (2 ** (args.encoder_layers + 1)),
+            'width': 64 // (2 ** (args.encoder_layers + 1)),
             'hidden_dim': args.hidden_dim,
             'patch_size': 4,
             'num_layers': args.layers,
@@ -574,22 +757,30 @@ if __name__ == '__main__':
         }
     }
 
-    encoder = Encoder(layers=args.encoder_layers, hidden_dim=args.encoder_hidden_dim)
-    model = build_delay_module(delay_config)
-    decoder = Decoder(layers=args.encoder_layers, hidden_dim=args.encoder_hidden_dim)
+    match args.encoder:
+        case 'mamba':
+            encoder = ConvGLUEncoder(in_channels=1, hidden_dim=args.encoder_hidden_dim, layers=args.encoder_layers)
+            decoder = Decoder(layers=4, hidden_dim=args.encoder_hidden_dim)
+        case 'mambaglu':
+            encoder = MambaGLUEncoder(in_channels=1, hidden_dim=args.encoder_hidden_dim, layers=args.encoder_layers)
+            decoder = Decoder(layers=4, hidden_dim=args.encoder_hidden_dim)
+        case 'convglu':
+            encoder = ConvGLUEncoder(in_channels=1, hidden_dim=args.encoder_hidden_dim, layers=args.encoder_layers)
+            decoder = Decoder(layers=4, hidden_dim=args.encoder_hidden_dim)
+        case 'conv':
+            encoder = Encoder(input_channels=1, hidden_dim=args.encoder_hidden_dim, layers=args.encoder_layers)
+            decoder = Decoder(layers=3, hidden_dim=args.encoder_hidden_dim)
 
-    print(encoder)
-    #input()
-    print(decoder)
-    #input()
+    model = build_delay_module(delay_config)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # we assume gpu is necessary
     if torch.cuda.is_available():
-        encoder.to(device)
         model.to(device)
-        decoder.to(device)
+        if args.encoder:
+            encoder.to(device)
+            decoder.to(device)
 
     # --------------- Loss, scheduler and optimizer setup ---------------
     loss_coefficient = args.loss_coefficient
@@ -611,8 +802,10 @@ if __name__ == '__main__':
             criterion = torch.nn.L1Loss()
         elif args.loss == 'mse':
             criterion = torch.nn.MSELoss()
-        elif args.loss == 'huber':
-            criterion = torch.nn.SmoothL1Loss()
+        elif args.loss.startswith('huber'):
+            # extract delta from the loss name, e.g., 'huber_1.0' -> delta=1.0
+            beta = float(args.loss.split('_')[1]) if '_' in args.loss else 1.0
+            criterion = torch.nn.SmoothL1Loss(beta=beta)
         elif args.loss == 'bce':
             criterion = torch.nn.BCEWithLogitsLoss()
         elif args.loss == 'perceptual':
@@ -705,10 +898,13 @@ if __name__ == '__main__':
     }
 
     scheduler = train_utils.setup_lr_schedular(lr_scheduler_config, optimizer, num_steps)
+    loss_per_epoch = []
+    validation_loss_per_epoch = []
 
     max_epochs = args.epochs
     for epoch in range(0, max_epochs):
         print(f"Epoch {epoch+1}/{max_epochs}")
+        valid_train_loss = []
 
         pbar2 = tqdm.tqdm(total=len(train_loader), leave=True)
         model.train()
@@ -721,11 +917,20 @@ if __name__ == '__main__':
             inputs = inputs.to(device)
             targets = targets.to(device)
             
-            encoded = encoder(inputs)  # shape: [batch, K, hidden_dim, 64, 64]
+            if encoder is not None:
+                encoded = encoder(inputs)  # shape: [batch, K, hidden_dim, 64, 64]
+            else: 
+                encoded = inputs
+
             prediction, intermediate = model(encoded)  # prediction shape: [batch, K, 1, 64, 64]
-            decoded = decoder(intermediate)  # shape: [batch, K, 1, 64, 64]
+
+            if decoder is not None:
+                decoded = decoder(intermediate)  # shape: [batch, K, 1, 64, 64]
+            else:
+                decoded = intermediate
 
             final_loss = criterion(decoded, targets) * loss_coefficient
+            valid_train_loss.append(final_loss.item())
 
             if (batch_idx + 1) % 25 == 0:
                 show_pred_gt(decoded, targets, inputs, f'epoch_{epoch}_iter_{batch_idx}', save_path=save_path)
@@ -733,6 +938,8 @@ if __name__ == '__main__':
             pbar2.update(1)
             final_loss.backward()
             optimizer.step()
+        
+        loss_per_epoch.append(statistics.mean(valid_train_loss))
 
         if lr_scheduler_config['lr_scheduler']['core_method'] != 'cosineannealwarm':
             scheduler.step()
@@ -751,13 +958,55 @@ if __name__ == '__main__':
                 inputs = inputs.to(device)
                 targets = targets.to(device)
 
-                encoded = encoder(inputs)  # shape: [batch, K, hidden_dim, 64, 64]
-                feature_pred, intermediate_preds = model(encoded)
-                decoded = decoder(intermediate_preds)  # shape: [batch, K, 1, 64, 64]
+                if encoder is not None:
+                    encoded = encoder(inputs)  # shape: [batch, K, hidden_dim, 64, 64]
+                else:
+                    encoded = inputs
 
+                feature_pred, intermediate_preds = model(encoded)
+
+                if decoder is not None:
+                    decoded = decoder(intermediate_preds)  # shape: [batch, K, 1, 64, 64]
+                else:
+                    decoded = feature_pred
+
+                if (i + 1) % 500 == 0:
+                    show_pred_gt(decoded, targets, inputs, f'test_epoch_{epoch}_iter_{i}', save_path=save_path)
+            
                 final_loss = criterion(decoded, targets) * loss_coefficient
                 valid_ave_loss.append(final_loss.item())
 
-        valid_ave_loss = statistics.mean(valid_ave_loss)
-        print('At epoch %d, the validation loss is %f' % (epoch, valid_ave_loss))
+        if args.save_ckpt:
+            torch.save({
+                'encoder_state_dict': encoder.state_dict(),
+                'model_state_dict': model.state_dict(),
+                'decoder_state_dict': decoder.state_dict()
+            }, os.path.join(save_path, f'model_checkpoint_{epoch}.pth'))
+
+        validation_loss_per_epoch.append(statistics.mean(valid_ave_loss))
+        print('At epoch %d, the validation loss is %f' % (epoch, validation_loss_per_epoch[-1]))
             
+    # Save model chkpoint
+
+    # Save training and validation loss curves
+    def plot_loss():
+        plt.figure(figsize=(5, 10))
+        plt.subplot(2, 1, 1)
+        plt.plot(loss_per_epoch, label='Training Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training Loss')
+        plt.legend()
+
+        plt.subplot(2, 1, 2)
+        plt.plot(validation_loss_per_epoch, label='Validation Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Validation Loss')
+        plt.legend()
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, 'loss_curves.png'))
+        plt.show()
+
+    plot_loss()

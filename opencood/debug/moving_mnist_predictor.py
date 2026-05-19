@@ -11,9 +11,14 @@ import opencood.hypes_yaml.yaml_utils as yaml_utils
 
 from opencood.tools import train_utils
 
+from matplotlib import pyplot as plt
 from torch.utils.data import Dataset, DataLoader
 from opencood.models.delay import build_delay_module
 
+torch.manual_seed(42)
+np.random.seed(42)
+
+BASE_PATH = "/equilibrium/students/svatamanelu/"
 
 # -------------- SSIM and MS-SSIM implementation from https://github.com/VainF/pytorch-msssim/blob/master/pytorch_msssim/ssim.py --------------
 import warnings
@@ -348,19 +353,21 @@ class MS_SSIM(torch.nn.Module):
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Moving MNIST Predictor')
+    parser.add_argument('--arch',type=str, help='Architecture to use for prediction')
     parser.add_argument('--residual', action=argparse.BooleanOptionalAction, help='Whether to use residual connection')
     parser.add_argument('--bidirectional', action=argparse.BooleanOptionalAction, help='Use bidirectional Mamba blocks')
     parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension for Mamba blocks')
     parser.add_argument('--loss', type=str, default='l1', help='Loss function to use')
     parser.add_argument('--layers', type=int, default=5, help='Number of Mamba blocks to use')
 
+    parser.add_argument('--save_ckpt', action='store_true', help='Save checkpoint during training')
     parser.add_argument('--loss_coefficient', type=float, default=1.0, help='Coefficient for the loss function')
     parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs')
 
     args = parser.parse_args()
     return args
 
-def show_pred_gt(pred, gt, input_frames, iteration, save_path="/home/svatamanelu/moving_mnist_predictor_results"):
+def show_pred_gt(pred, gt, input_frames, iteration, save_path="/equilibrium/students/svatamanelu/moving_mnist_predictor_results"):
     #pred = pred.cpu().detach().numpy()
     #gt = gt.cpu().detach().numpy()
 
@@ -446,6 +453,8 @@ class MovingMNIST(Dataset):
         # Normalize to [0, 1] and convert to float32
         video = video.astype(np.float32) / 255.0
         
+        # return the differences between consecutive frames as input and the future frames as target
+
         # Split into input (history) and target (future) sequences
         input_frames = video[:self.n_frames_input]
         target_frames = video[self.n_frames_input:self.total_frames]
@@ -462,24 +471,24 @@ if __name__ == '__main__':
 
     res_string = 'residual' if args.residual else 'no_residual'
     bidir_string = 'bidirectional' if args.bidirectional else 'unidirectional'
-    save_path = f"/home/svatamanelu/moving_mnist/{args.loss}_{str(args.loss_coefficient)}_{res_string}_{bidir_string}_{str(args.layers)}_{str(args.hidden_dim)}_predictor_results"
+    save_path = os.path.join(BASE_PATH, f"moving_mnist/{str(args.arch)}_{args.loss}_{str(args.loss_coefficient)}_{res_string}_{bidir_string}_{str(args.layers)}_{str(args.hidden_dim)}_predictor_results")
     os.makedirs(save_path, exist_ok=True)
 
-    dataset_train = MovingMNIST(root='/home/svatamanelu/mnist_test_seq.npy', is_train=True)
+    dataset_train = MovingMNIST(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=True)
     train_loader = DataLoader(dataset_train, batch_size=32, shuffle=True)
 
-    dataset_test = MovingMNIST(root='/home/svatamanelu/mnist_test_seq.npy', is_train=False)
+    dataset_test = MovingMNIST(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=False)
     test_loader = DataLoader(dataset_test, batch_size=1, shuffle=True)
 
     delay_config = {
-        'core_method': 'MambaMultiPredictor',
+        'core_method': args.arch,
         'args': {
             'future_delay': 500,  # ms
             'future_delay_list': [100, 200, 300, 400, 500],
             'past_k': 5,
-            'input_channels': 1,
-            'height': 64,
-            'width': 64,
+            'input_channels': 1,  # the output channel dimension of the encoder
+            'height': 64 // (2 ** (args.layers + 1)),
+            'width': 64 // (2 ** (args.layers + 1)),
             'hidden_dim': args.hidden_dim,
             'patch_size': 4,
             'num_layers': args.layers,
@@ -491,7 +500,7 @@ if __name__ == '__main__':
             'residual': args.residual
         }
     }
-
+    
     model = build_delay_module(delay_config)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -499,7 +508,6 @@ if __name__ == '__main__':
     # we assume gpu is necessary
     if torch.cuda.is_available():
         model.to(device)
-    model_without_ddp = model
 
     # --------------- Loss, scheduler and optimizer setup ---------------
     loss_coefficient = args.loss_coefficient
@@ -521,8 +529,10 @@ if __name__ == '__main__':
             criterion = torch.nn.L1Loss()
         elif args.loss == 'mse':
             criterion = torch.nn.MSELoss()
-        elif args.loss == 'huber':
-            criterion = torch.nn.SmoothL1Loss()
+        elif args.loss.startswith('huber'):
+            # extract delta from the loss name, e.g., 'huber_1.0' -> delta=1.0
+            beta = float(args.loss.split('_')[1]) if '_' in args.loss else 1.0
+            criterion = torch.nn.SmoothL1Loss(beta=beta)
         elif args.loss == 'bce':
             criterion = torch.nn.BCEWithLogitsLoss()
         elif args.loss == 'perceptual':
@@ -551,8 +561,8 @@ if __name__ == '__main__':
                     self.ssim = SSIM(data_range=data_range, size_average=size_average, win_size=win_size, win_sigma=win_sigma, channel=channel, spatial_dims=spatial_dims)
 
                 def forward(self, pred, gt):
-                    pred = einops.rearrange(pred, 't b c h w -> (t b) c h w')
-                    gt = einops.rearrange(gt, 't b c h w -> (t b) c h w')
+                    pred = einops.rearrange(pred, 'b t c h w -> (b t) c h w')
+                    gt = einops.rearrange(gt, 'b t c h w -> (b t) c h w')
                     return 1 - self.ssim(pred, gt)
 
             criterion = VideoSSIM(data_range=1.0, size_average=True, win_size=11, win_sigma=1.5, channel=1, spatial_dims=2)
@@ -563,8 +573,8 @@ if __name__ == '__main__':
                     self.ms_ssim = MS_SSIM(data_range=data_range, size_average=size_average, win_size=win_size, win_sigma=win_sigma, channel=channel, spatial_dims=spatial_dims)
 
                 def forward(self, pred, gt):
-                    pred = einops.rearrange(pred, 't b c h w -> (t b) c h w')
-                    gt = einops.rearrange(gt, 't b c h w -> (t b) c h w')
+                    pred = einops.rearrange(pred, 'b t c h w -> (b t) c h w')
+                    gt = einops.rearrange(gt, 'b t c h w -> (b t) c h w')
                     return 1 - self.ms_ssim(pred, gt)
 
             criterion = VideoMSSSIM(data_range=1.0, size_average=True, win_size=11, win_sigma=1.5, channel=1, spatial_dims=2)
@@ -594,8 +604,16 @@ if __name__ == '__main__':
             'lr': 0.0001
         }
     }
+    if False:
+        optimizer = train_utils.setup_optimizer(optimizer_config, model_without_ddp)
+    else:
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=0.0001, 
+            weight_decay=0.0001, 
+            eps=1.0e-10
+        )
 
-    optimizer = train_utils.setup_optimizer(optimizer_config, model_without_ddp)
     # lr scheduler setup
     num_steps = len(train_loader)
     lr_scheduler_config = {
@@ -607,10 +625,13 @@ if __name__ == '__main__':
     }
 
     scheduler = train_utils.setup_lr_schedular(lr_scheduler_config, optimizer, num_steps)
+    loss_per_epoch = []
+    validation_loss_per_epoch = []
 
     max_epochs = args.epochs
     for epoch in range(0, max_epochs):
         print(f"Epoch {epoch+1}/{max_epochs}")
+        valid_train_loss = []
 
         pbar2 = tqdm.tqdm(total=len(train_loader), leave=True)
         model.train()
@@ -626,6 +647,7 @@ if __name__ == '__main__':
             prediction, intermediate = model(inputs)  # prediction shape: [batch, K, 1, 64, 64]
 
             final_loss = criterion(intermediate, targets) * loss_coefficient
+            valid_train_loss.append(final_loss.item())
 
             if (batch_idx + 1) % 25 == 0:
                 show_pred_gt(intermediate, targets, inputs, f'epoch_{epoch}_iter_{batch_idx}', save_path=save_path)
@@ -633,6 +655,8 @@ if __name__ == '__main__':
             pbar2.update(1)
             final_loss.backward()
             optimizer.step()
+        
+        loss_per_epoch.append(statistics.mean(valid_train_loss))
 
         if lr_scheduler_config['lr_scheduler']['core_method'] != 'cosineannealwarm':
             scheduler.step()
@@ -652,10 +676,42 @@ if __name__ == '__main__':
                 targets = targets.to(device)
 
                 feature_pred, intermediate_preds = model(inputs)
-                
+
+                if (i + 1) % 500 == 0:
+                    show_pred_gt(intermediate_preds, targets, inputs, f'test_epoch_{epoch}_iter_{i}', save_path=save_path)
+            
                 final_loss = criterion(intermediate_preds, targets) * loss_coefficient
                 valid_ave_loss.append(final_loss.item())
 
-        valid_ave_loss = statistics.mean(valid_ave_loss)
-        print('At epoch %d, the validation loss is %f' % (epoch, valid_ave_loss))
+        if args.save_ckpt:
+            torch.save({
+                'model_state_dict': model.state_dict()
+            }, os.path.join(save_path, f'model_checkpoint_{epoch}.pth'))
+
+        validation_loss_per_epoch.append(statistics.mean(valid_ave_loss))
+        print('At epoch %d, the validation loss is %f' % (epoch, validation_loss_per_epoch[-1]))
             
+    # Save model chkpoint
+
+    # Save training and validation loss curves
+    def plot_loss():
+        plt.figure(figsize=(5, 10))
+        plt.subplot(2, 1, 1)
+        plt.plot(loss_per_epoch, label='Training Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training Loss')
+        plt.legend()
+
+        plt.subplot(2, 1, 2)
+        plt.plot(validation_loss_per_epoch, label='Validation Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Validation Loss')
+        plt.legend()
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, 'loss_curves.png'))
+        plt.show()
+
+    plot_loss()

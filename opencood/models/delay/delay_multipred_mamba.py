@@ -202,12 +202,12 @@ class MambaMultiPredictor(nn.Module):
 
             preds.append(pred_frame)
         
-        preds = torch.stack(preds, dim=1)  # [num_future_preds, B, C, H, W]
+        preds = torch.stack(preds, dim=1)  # [B, num_future_preds, C, H, W]
         
         if self.residual_connection:
             # Add residual connection from last input frame
             last_frame = x[:, -1]  # [B, C, H, W]
-            preds = preds + last_frame.unsqueeze(0)  # Broadcast to all predictions
+            preds = preds + last_frame.unsqueeze(1)  # Broadcast to all predictions
 
         feat_enc = preds[:, self.prediction_horizon_idx]  # [B, C, H, W]
         
