@@ -18,7 +18,7 @@ from opencood.models.delay import build_delay_module
 torch.manual_seed(42)
 np.random.seed(42)
 
-BASE_PATH = "/equilibrium/students/svatamanelu/"
+BASE_PATH = os.environ.get('BASE_PATH', '/equilibrium/students/svatamanelu')
 
 # -------------- SSIM and MS-SSIM implementation from https://github.com/VainF/pytorch-msssim/blob/master/pytorch_msssim/ssim.py --------------
 import warnings
@@ -359,6 +359,8 @@ def parse_args():
     parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension for Mamba blocks')
     parser.add_argument('--loss', type=str, default='l1', help='Loss function to use')
     parser.add_argument('--layers', type=int, default=5, help='Number of Mamba blocks to use')
+    parser.add_argument('--encoder_out_features', type=int, default=768, help='Number of output features for last encoder layer')
+    parser.add_argument('--encoder_layer_reps', type=int, default=2, help='Number of repetitions for each encoder layer')
 
     parser.add_argument('--save_ckpt', action='store_true', help='Save checkpoint during training')
     parser.add_argument('--loss_coefficient', type=float, default=1.0, help='Coefficient for the loss function')
@@ -471,7 +473,7 @@ if __name__ == '__main__':
 
     res_string = 'residual' if args.residual else 'no_residual'
     bidir_string = 'bidirectional' if args.bidirectional else 'unidirectional'
-    save_path = os.path.join(BASE_PATH, f"moving_mnist/{str(args.arch)}_{args.loss}_{str(args.loss_coefficient)}_{res_string}_{bidir_string}_{str(args.layers)}_{str(args.hidden_dim)}_predictor_results")
+    save_path = os.path.join(BASE_PATH, f"moving_mnist/{str(args.arch)}_{str(args.encoder_layer_reps)}_{args.loss}_{str(args.loss_coefficient)}_{res_string}_{bidir_string}_{str(args.layers)}_{str(args.hidden_dim)}_predictor_results")
     os.makedirs(save_path, exist_ok=True)
 
     dataset_train = MovingMNIST(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=True)
@@ -480,15 +482,18 @@ if __name__ == '__main__':
     dataset_test = MovingMNIST(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=False)
     test_loader = DataLoader(dataset_test, batch_size=1, shuffle=True)
 
+    encoder_num_layers = 3
+    encoder_first_hidden_dim = 128
+
     delay_config = {
         'core_method': args.arch,
         'args': {
             'future_delay': 500,  # ms
             'future_delay_list': [100, 200, 300, 400, 500],
             'past_k': 5,
-            'input_channels': 1,  # the output channel dimension of the encoder
-            'height': 64 // (2 ** (args.layers + 1)),
-            'width': 64 // (2 ** (args.layers + 1)),
+            'input_channels': args.encoder_out_features,  # the output channel dimension of the encoder
+            'height': 64 // (2 ** (encoder_num_layers + 1)),
+            'width': 64 // (2 ** (encoder_num_layers + 1)),
             'hidden_dim': args.hidden_dim,
             'patch_size': 4,
             'num_layers': args.layers,
@@ -497,11 +502,23 @@ if __name__ == '__main__':
             'expand': 2,
             'use_bidirectional': args.bidirectional,
             'dropout': 0.0,
-            'residual': args.residual
+            'residual': args.residual,
+            'encoder_config': {
+                'input_channels': 1,  # the input channel dimension for the encoder
+                'num_layers': encoder_num_layers,
+                "reps": [args.encoder_layer_reps] * encoder_num_layers,
+                "channels": [encoder_first_hidden_dim + (args.encoder_out_features - encoder_first_hidden_dim) * i // encoder_num_layers for i in range(1, encoder_num_layers + 1)],
+                "strides": [2] * encoder_num_layers,
+            }
         }
     }
+
+    print(delay_config)
     
     model = build_delay_module(delay_config)
+
+    # save the model for visualization
+    #torch.save(model.state_dict(), os.path.join(save_path, 'model_initial.pth'))
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 

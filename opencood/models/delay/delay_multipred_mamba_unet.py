@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from mamba_ssm import Mamba, Mamba2
 from einops.layers.torch import Rearrange 
+from opencood.models.delay.delay_multipred_mamba import MambaMultiPredictor
 
 class MambaBlock(nn.Module):
     """Mamba2 block with pre-norm and residual connection"""
@@ -133,114 +134,148 @@ class SpatioChannelMixer(torch.nn.Module):
         return x
 
 class MambaGLUEncoder(torch.nn.Module):
-    def __init__(self, in_channels=1, hidden_dim=256, layers=3):
+    def __init__(self, in_channels=1, layers=2, size=64, reps=[3, 3], channels=[128, 256], strides=[2, 2]):
         super(MambaGLUEncoder, self).__init__()
         self.in_channels = in_channels
-        self.hidden_dim = hidden_dim
-        self.layers = layers
 
-        self.patch_embed = OverlapPatchEmbed(patch_size=3, stride=2, in_chans=self.in_channels, embed_dim=self.hidden_dim)
+        if isinstance(reps, int):
+            reps = [reps] * layers
+
+        if isinstance(channels, int):
+            channels = [channels] * layers
+
+        if isinstance(strides, int):
+            strides = [strides] * layers
+        
+        self.layers = layers
+        self.size = size
+        self.reps = reps
+        self.channels = channels
+        self.strides = strides
+
+        assert len(self.reps) == self.layers, "Length of reps list must match number of layers"
+        assert len(self.channels) == self.layers, "Length of channels list must match number of layers"
+        assert len(self.strides) == self.layers, "Length of strides list must match number of layers"
+
+        self.patch_embed = OverlapPatchEmbed(patch_size=3, stride=2, in_chans=self.in_channels, embed_dim=self.channels[0])
 
         self.arch = torch.nn.ModuleList()
+        self.downsamples = torch.nn.ModuleList()
 
         for i in range(self.layers):
-            in_features = self.hidden_dim 
-            out_features = self.hidden_dim 
-            self.arch.append(
-                torch.nn.Sequential(
-                    SpatioChannelMixer(
-                        hidden_dim=hidden_dim,
-                        size=64 // (2 ** (i+1)),
-                        spatial_mixer=MambaBlock(hidden_dim=in_features, d_state=64, d_conv=4, expand=2),
-                        channel_mixer=ConvolutionalGLU(in_features, in_features),
-                    ),
-                einops.layers.torch.Rearrange('b t c h w -> (b t) c h w'),
-                OverlapPatchEmbed(patch_size=3, stride=2, in_chans=in_features, embed_dim=out_features),
-                einops.layers.torch.Rearrange('(b t) c h w -> b t c h w', t=5)
-                ) if i < self.layers - 1 else
-                torch.nn.Sequential(
-                    SpatioChannelMixer(
-                        hidden_dim=hidden_dim,
-                        size=64 // (2 ** (i+1)),
-                        spatial_mixer=MambaBlock(hidden_dim=in_features, d_state=64, d_conv=4, expand=2),
-                        channel_mixer=ConvolutionalGLU(in_features, in_features),
-                    ),
-                    einops.layers.torch.Rearrange('b t c h w -> (b t) c h w'),
-                    OverlapPatchEmbed(patch_size=3, stride=2, in_chans=in_features, embed_dim=out_features),
-                    einops.layers.torch.Rearrange('(b t) c h w -> b t c h w', t=5),
-                    SpatioChannelMixer(
-                        hidden_dim=hidden_dim,
-                        size=64 // (2 ** (i+2)),
-                        spatial_mixer=MambaBlock(hidden_dim=in_features, d_state=64, d_conv=4, expand=2),
-                        channel_mixer=ConvolutionalGLU(in_features, in_features),
-                    ),
+            rep = self.reps[i] if i < len(self.reps) else self.reps[-1]
+            stride = self.strides[i] if i < len(self.strides) else self.strides[-1]
+
+            # 1. Build the identical spatial-channel blocks for this stage
+            for r in range(rep):
+                in_features = self.channels[i]
+                
+                self.arch.append(
+                    torch.nn.Sequential(
+                        SpatioChannelMixer(
+                            hidden_dim=in_features,
+                            size=self.size // (2 ** (i+1)),
+                            spatial_mixer=MambaBlock(hidden_dim=in_features, d_state=64, d_conv=4, expand=2),
+                            channel_mixer=ConvolutionalGLU(in_features, in_features),
+                        )
+                    )
                 )
-            )
+
+            # 2. Build the downsampler separately
+            if i < self.layers:
+                in_features = self.channels[i]
+                out_features = self.channels[i+1] if i < self.layers - 1 else self.channels[i]
+                self.downsamples.append(
+                    OverlapPatchEmbed(patch_size=3, stride=stride, in_chans=in_features, embed_dim=out_features)
+                )
 
     def forward(self, x, H=None, W=None):
         # x: [B, T_in, C, H, W]
         B, T, C, H, W = x.shape
+        
+        # Initial patch embedding sequence
         x = einops.rearrange(x, 'b t c h w -> (b t) c h w')
         x = self.patch_embed(x)
-        x = einops.rearrange(x, '(b t) c hh hw -> b t c hh hw', b=B, t=T)
+        x = einops.rearrange(x, '(b t) c h w -> b t c h w', b=B, t=T)
 
-        hidden_states = [x.clone()]
+        hidden_states = []
+        block_idx = 0
 
-        for layer in self.arch:
-            #print(f"Encoder input shape: {x.shape}")
-            x = layer(x)
+        for i in range(self.layers):
+            rep = self.reps[i] if i < len(self.reps) else self.reps[-1]
+            
+            # Pass through the spatial-channel mixing blocks at the current resolution
+            for r in range(rep):
+                x = self.arch[block_idx](x)
+                block_idx += 1
+            
+            # If not the final layer, capture residual *BEFORE* downscaling, then downscale
             hidden_states.append(x.clone())
+            
+            # Apply downscaling securely
+            x = einops.rearrange(x, 'b t c h w -> (b t) c h w')
+            x = self.downsamples[i](x)
+            x = einops.rearrange(x, '(b t) c h w -> b t c h w', b=B, t=T)
 
         return x, hidden_states
 
 class MambaGLUDecoder(torch.nn.Module):
-    def __init__(self, out_channels=1, hidden_dim=256, layers=3, past_frames=5):
+    def __init__(self, out_channels=1, layers=2, past_frames=5, size=64, reps=[3, 3], channels=[128, 256], strides=[2, 2]):
         super(MambaGLUDecoder, self).__init__()
+
+        if isinstance(reps, int):
+            reps = [reps] * layers
+
+        if isinstance(channels, int):
+            channels = [channels] * layers
+
+        if isinstance(strides, int):
+            strides = [strides] * layers
+
         self.out_channels = out_channels
-        self.hidden_dim = hidden_dim
         self.layers = layers
         self.past_frames = past_frames
+        self.size = size
+        self.reps = reps
+        self.channels = channels
+        self.strides = strides
+
+        assert len(self.reps) == self.layers, "Length of reps list must match number of layers"
+        assert len(self.channels) == self.layers, "Length of channels list must match number of layers"
+        assert len(self.strides) == self.layers, "Length of strides list must match number of layers"
 
         self.arch = torch.nn.ModuleList()
 
         for i in range(self.layers):
-            in_features = self.hidden_dim 
-            out_features = self.hidden_dim 
-            self.arch.append(
-                torch.nn.Sequential(
-                    SpatioChannelMixer(
-                        hidden_dim=hidden_dim,
-                        size=64 // (2 ** (self.layers - i + 1)),
-                        spatial_mixer=MambaBlock(hidden_dim=in_features, d_state=64, d_conv=4, expand=2),
-                        channel_mixer=ConvolutionalGLU(in_features, in_features),
-                    ),
-                    einops.layers.torch.Rearrange('b t c h w -> (b t) c h w'),
-                    torch.nn.ConvTranspose2d(in_channels=in_features, out_channels=out_features, kernel_size=3, stride=2, padding=1, output_padding=1),
-                    einops.layers.torch.Rearrange('(b t) c h w -> b t c h w', t=self.past_frames)
-                ) if i > 0 else
-                torch.nn.Sequential(
-                    SpatioChannelMixer(
-                        hidden_dim=hidden_dim,
-                        size=64 // (2 ** (self.layers+1)),
-                        spatial_mixer=MambaBlock(hidden_dim=in_features, d_state=64, d_conv=4, expand=2),
-                        channel_mixer=ConvolutionalGLU(in_features, in_features),
-                    ),
-                    einops.layers.torch.Rearrange('b t c h w -> (b t) c h w'),
-                    torch.nn.ConvTranspose2d(in_channels=in_features, out_channels=out_features, kernel_size=3, stride=2, padding=1, output_padding=1),
-                    einops.layers.torch.Rearrange('(b t) c h w -> b t c h w', t=self.past_frames),
-                    SpatioChannelMixer(
-                        hidden_dim=hidden_dim,
-                        size=64 // (2 ** (self.layers)),
-                        spatial_mixer=MambaBlock(hidden_dim=in_features, d_state=64, d_conv=4, expand=2),
-                        channel_mixer=ConvolutionalGLU(in_features, in_features),
-                    )
-                )
+            rep = self.reps[i]
+
+            for r in range(rep): 
+                in_features = self.channels[i]
+
+                self.arch.append(
+                    torch.nn.Sequential(
+                        SpatioChannelMixer(
+                            hidden_dim=in_features,
+                            size=self.size // (2 ** (self.layers - i)),
+                            spatial_mixer=MambaBlock(hidden_dim=in_features, d_state=64, d_conv=4, expand=2),
+                            channel_mixer=ConvolutionalGLU(in_features, in_features),
+                        )
+                    ) 
+                ) 
+        
+        # 2. Build the upsamplers separately
+        self.upsamples = torch.nn.ModuleList()
+        for i in range(self.layers):
+            in_features = self.channels[i-1] if i > 0 else self.channels[0]
+            out_features = self.channels[i] 
+            self.upsamples.append(
+                torch.nn.ConvTranspose2d(in_channels=in_features, out_channels=out_features, kernel_size=3, stride=self.strides[i], padding=1, output_padding=1)
             )
         
         self.out_proj = torch.nn.Sequential(
             einops.layers.torch.Rearrange('b t c h w -> (b t) c h w'),
-            torch.nn.ConvTranspose2d(in_channels=self.hidden_dim, out_channels=self.out_channels, kernel_size=3, stride=2, padding=1, output_padding=1),
-            torch.nn.Sigmoid(),
+            torch.nn.ConvTranspose2d(in_channels=self.channels[-1], out_channels=self.out_channels, kernel_size=3, stride=2, padding=1, output_padding=1),
+            torch.nn.Tanh(),
             einops.layers.torch.Rearrange('(b t) c h w -> b t c h w', t=self.past_frames)
         )
 
@@ -248,11 +283,27 @@ class MambaGLUDecoder(torch.nn.Module):
         # x: [B, T_in, C, H, W]
         B, T, C, H, W = x.shape
         
-        for layer in self.arch:
-            #print(f"Decoder input shape: {x.shape}")
-            x = layer(x) + hidden_states.pop()  # Add skip connection from encoder 
+        block_idx = 0
+        for i in range(self.layers):
+            #print(f"Decoder layer {i}, input shape: {x.shape}")
+            rep = self.reps[i] if i < len(self.reps) else self.reps[-1]
 
+            # Apply upscaling securely
+            x = einops.rearrange(x, 'b t c h w -> (b t) c h w')
+            x = self.upsamples[i](x)
+            x = einops.rearrange(x, '(b t) c h w -> b t c h w', b=B, t=T)
+
+            # Add residual
+            hs = hidden_states.pop()
+            x = x + hs
+            
+            # Pass through the spatial-channel mixing blocks at the current resolution
+            for r in range(rep):
+                x = self.arch[block_idx](x)
+                block_idx += 1
+            
         x = self.out_proj(x)
+        #print(f"Max output value: {x.max().item()}")
 
         return x
 
@@ -263,7 +314,6 @@ class MambaUNet(nn.Module):
     ):
         super().__init__()
 
-        self.input_channels = args.get('input_channels', 8)
         self.height = args.get('height', 48)
         self.width = args.get('width', 176)
         self.hidden_dim = args.get('hidden_dim', 512)
@@ -283,17 +333,29 @@ class MambaUNet(nn.Module):
 
         self.past_k = args.get('past_k', 4) # Number of past frames to use for prediction (if using pred token)
 
-        # Patch embedding
+        self.encoder_config = args.get('encoder_config', {})
+        self.encoder_input_channels = self.encoder_config.get('input_channels', 8)
+        self.encoder_num_layers = self.encoder_config.get('num_layers', 2)
+        self.encoder_reps = self.encoder_config.get('reps', [3, 3])
+        self.encoder_channels = self.encoder_config.get('channels', [128, self.hidden_dim])
+        self.encoder_strides = self.encoder_config.get('strides', [2, 2])
+
         self.encoder = MambaGLUEncoder(
-            in_channels=self.input_channels,
-            hidden_dim=self.hidden_dim,
-            layers=self.num_layers
+            in_channels=self.encoder_input_channels,
+            layers=self.encoder_num_layers,
+            reps=self.encoder_reps,
+            channels=self.encoder_channels,
+            strides=self.encoder_strides
         )
 
+        self.predictor = MambaMultiPredictor(args)
+
         self.decoder = MambaGLUDecoder(
-            out_channels=self.input_channels,
-            hidden_dim=self.hidden_dim,
-            layers=self.num_layers,
+            out_channels=self.encoder_input_channels,
+            layers=self.encoder_num_layers,
+            reps=self.encoder_reps,
+            channels=self.encoder_channels[::-1],  # Reverse the channel configuration for the decoder
+            strides=self.encoder_strides,
             past_frames=self.past_k
         )
 
@@ -310,46 +372,15 @@ class MambaUNet(nn.Module):
         # Patchify and add positional encoding
         feat_enc, hidden_states = self.encoder(x)
         
-        # TODO: fix me
-        hidden_states.pop()
+        prediction, predictions = self.predictor(feat_enc)
 
-        preds = self.decoder(feat_enc, hidden_states)
+        #print(f"Prediction max item: {predictions.max().item()}")
+        #for hs in hidden_states:
+        #    print(f"Hidden state shape: {hs.shape}")
+       
+        preds = self.decoder(predictions, hidden_states)
         
-        return preds[self.prediction_horizon_idx], preds
-
-
-class AutoregressivePredictor(MambaUNet):
-    """Variant that can predict multiple future frames autoregressively"""
-    def __init__(self, args):
-        super().__init__(args)
-    
-    def forward(self, x, num_future_frames=1):
-        """
-        Args:
-            x: [B, T, C, H, W] input frames
-            num_future_frames: number of frames to predict into future
-        
-        Returns:
-            [B, num_future_frames, C, H, W] predicted future frames
-        """
-        B, T, C, H, W = x.shape
-        predictions = []
-        
-        current_input = x
-        
-        for _ in range(num_future_frames):
-            # Predict next frame
-            next_frame: torch.Tensor = super().forward(current_input)  # [B, C, H, W]
-            predictions.append(next_frame.unsqueeze(1))
-            
-            # Update input: remove oldest frame, add prediction
-            current_input = torch.cat([
-                current_input[:, 1:],  # Drop first frame
-                next_frame.unsqueeze(1)  # Add prediction
-            ], dim=1)
-        
-        return torch.cat(predictions, dim=1)  # [B, num_future_frames, C, H, W]
-
+        return preds[:, self.prediction_horizon_idx], preds
 
 if __name__ == '__main__':
     B, T, C, H, W = 2, 5, 8, 48, 176
@@ -374,5 +405,3 @@ if __name__ == '__main__':
     print(f"Input shape: {x.shape}")
     print(f"Output shape: {y[0].shape}")
     print(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
-    
-    

@@ -124,14 +124,7 @@ class MambaMultiPredictor(nn.Module):
                 )
             )
             for _ in range(len(args.get('future_delay_list', [0])))
-        ])
-
-        self.fold = nn.Fold(
-            output_size=(self.height, self.width), 
-            kernel_size=self.patch_size, 
-            stride=self.patch_size
-        )
-        
+        ])        
 
     def patchify(self, x):
         """Convert frames to patches with embeddings"""
@@ -203,7 +196,8 @@ class MambaMultiPredictor(nn.Module):
             preds.append(pred_frame)
         
         preds = torch.stack(preds, dim=1)  # [B, num_future_preds, C, H, W]
-        
+        print(f"Predictions shape before residual: {preds.shape}")
+        print(f"Input shape: {x.shape}")
         if self.residual_connection:
             # Add residual connection from last input frame
             last_frame = x[:, -1]  # [B, C, H, W]
