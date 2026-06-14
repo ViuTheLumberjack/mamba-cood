@@ -57,11 +57,20 @@ class MambaMultiPredictor(nn.Module):
     ):
         super().__init__()
 
-        self.input_channels = args.get('input_channels', 8)
-        self.height = args.get('height', 48)
-        self.width = args.get('width', 176)
+        self.image_mode = args.get('image_mode', True)
+        if self.image_mode:
+            self.input_channels = args.get('input_channels', 8)
+            self.height = args.get('height', 48)
+            self.width = args.get('width', 176)
+            self.patch_size = args.get('patch_size', 8)
+
+            self.input_dim = self.input_channels * self.patch_size * self.patch_size
+            self.num_patches = (self.height // self.patch_size) * (self.width // self.patch_size)
+        else:
+            self.input_dim = args.get('input_channels', 128)
+            self.num_patches = 1
+
         self.hidden_dim = args.get('hidden_dim', 512)
-        self.patch_size = args.get('patch_size', 8)
         self.num_layers = args.get('num_layers', 2)
         self.d_state = args.get('d_state', 64) 
         self.d_conv = args.get('d_conv', 4)
@@ -75,31 +84,27 @@ class MambaMultiPredictor(nn.Module):
         self.num_future_preds = len(self.prediction_horizon_list)
         self.prediction_horizon_idx = self.prediction_horizon_list.index(self.prediction_horizon)
 
-        self.num_patches = (self.height // self.patch_size) * (self.width // self.patch_size)
-        self.input_dim = self.input_channels * self.patch_size * self.patch_size
         self.past_k = args.get('past_k', 4) + 1 # Number of past frames to use for prediction (if using pred token)
 
         # Patch embedding
-        self.flatten = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
-        self.embed = nn.Linear(self.input_dim, self.hidden_dim)
-        self.embed_norm = nn.RMSNorm(self.hidden_dim) if False else nn.Identity() 
-        self.embed_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
+        if self.image_mode:
+            self.flatten = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
+            self.embed = nn.Linear(self.input_dim, self.hidden_dim)
+            self.embed_norm = nn.RMSNorm(self.hidden_dim) if False else nn.Identity() 
+            self.embed_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
 
         self.pos_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
         # Learnable positional encodings
         # Combined spatiotemporal encoding
         self.spatiotemporal_pos = nn.Parameter(
-            torch.randn(1, 100, self.num_patches, self.hidden_dim) * 0.02
+            torch.randn(1, (self.num_future_preds + self.past_k)*self.num_patches, self.hidden_dim) * 0.02
         )
 
         # Prediction token (alternative to using last frame patches)
         self.pred_token = nn.Parameter(torch.randn(1, self.num_future_preds*self.num_patches, self.hidden_dim))
 
         # Mamba2 backbone with residual connections and normalization
-        if self.use_bidirectional:
-            block_cls = BiMambaBlock
-        else:
-            block_cls = MambaBlock
+        block_cls = BiMambaBlock if self.use_bidirectional else MambaBlock
             
         self.blocks = nn.ModuleList([
             block_cls(self.hidden_dim, self.d_state, self.d_conv, self.expand) 
@@ -116,12 +121,12 @@ class MambaMultiPredictor(nn.Module):
                     nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity(),
                     nn.Linear(self.hidden_dim, self.input_dim)
                 ),
-                Rearrange('b np pd -> b pd np'),
+                Rearrange('b np pd -> b pd np') if self.image_mode else nn.Identity(),
                 nn.Fold(
                     output_size=(self.height, self.width), 
                     kernel_size=self.patch_size, 
                     stride=self.patch_size
-                )
+                ) if self.image_mode else nn.Identity()
             )
             for _ in range(len(args.get('future_delay_list', [0])))
         ])        
@@ -144,8 +149,8 @@ class MambaMultiPredictor(nn.Module):
 
     def add_positional_encoding(self, patches):
         """Add spatiotemporal positional encoding"""
-        B, T, NP, HD = patches.shape
-        patches = patches + self.spatiotemporal_pos[:, :T, :NP, :]
+        B, TNP, HD = patches.shape
+        patches = patches + self.spatiotemporal_pos[:, :TNP, :]
         patches = self.pos_dropout(patches)
         return patches
 
@@ -157,21 +162,25 @@ class MambaMultiPredictor(nn.Module):
         Returns:
             [B, T_preds, C, H, W] predicted next frame
         """
-        B, T, C, H, W = x.shape
+        print(f"Input shape: {x.shape}")
 
         # Patchify and add positional encoding
-        patches = self.patchify(x)  # [B, T, num_patches, hidden_dim]
-        patches = self.add_positional_encoding(patches)
-        
-        # Flatten spatiotemporal dimensions
-        seq = einops.rearrange(patches, 'b t np hd -> b (t np) hd')
+        if self.image_mode:
+            B, T, C, H, W = x.shape
+            patches = self.patchify(x)  # [B, T, num_patches, hidden_dim]
+            seq = einops.rearrange(patches, 'b t np hd -> b (t np) hd')
+        else:
+            B, T, HD = x.shape
+            seq = x
         
         # Add prediction token at the end
         num_pred_tokens = self.num_future_preds * self.num_patches
         pred_tokens = self.pred_token.expand(B, -1, -1)
+        print(f"Sequence shape before adding pred token: {pred_tokens.shape}")
         #print(f"Sequence shape before adding pred token: {seq.shape}")
         #print(f"Prediction token shape: {pred_tokens.shape}")
         seq = torch.cat([seq, pred_tokens], dim=1)
+        seq = self.add_positional_encoding(seq)
         
         # Process through Mamba2 blocks
         for block in self.blocks:
@@ -181,10 +190,13 @@ class MambaMultiPredictor(nn.Module):
         
         # Extract prediction tokens output
         pred_seq = seq[:, -num_pred_tokens:]  # [B, num_future_preds * num_patches, hidden_dim]
-        pred_seq = einops.rearrange(
-            pred_seq, 'b (f np) hd -> f b np hd', 
-            f=self.num_future_preds, np=self.num_patches
-        )
+        if self.image_mode:
+            pred_seq = einops.rearrange(
+                pred_seq, 'b (f np) hd -> f b np hd', 
+                f=self.num_future_preds, np=self.num_patches
+            )
+        else: 
+            pred_seq = einops.rearrange(pred_seq, 'b f hd -> f b hd')
         
         # Reconstruct each future prediction with its own head
         preds = []
@@ -197,7 +209,6 @@ class MambaMultiPredictor(nn.Module):
         
         preds = torch.stack(preds, dim=1)  # [B, num_future_preds, C, H, W]
         print(f"Predictions shape before residual: {preds.shape}")
-        print(f"Input shape: {x.shape}")
         if self.residual_connection:
             # Add residual connection from last input frame
             last_frame = x[:, -1]  # [B, C, H, W]

@@ -359,12 +359,18 @@ def parse_args():
     parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension for Mamba blocks')
     parser.add_argument('--loss', type=str, default='l1', help='Loss function to use')
     parser.add_argument('--layers', type=int, default=5, help='Number of Mamba blocks to use')
+    
     parser.add_argument('--encoder_out_features', type=int, default=768, help='Number of output features for last encoder layer')
     parser.add_argument('--encoder_layer_reps', type=int, default=2, help='Number of repetitions for each encoder layer')
+    parser.add_argument('--encoder_num_layers', type=int, default=3, help='Number of layers in the encoder')
 
     parser.add_argument('--save_ckpt', action='store_true', help='Save checkpoint during training')
     parser.add_argument('--loss_coefficient', type=float, default=1.0, help='Coefficient for the loss function')
     parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs')
+
+    parser.add_argument('--dataset', type=str, default='moving_mnist', help='Dataset to use for training and evaluation')
+    parser.add_argument('--note', type=str, default=None, help='Additional note to add to the saved results folder name')
+    parser.add_argument('--save_model', action='store_true', help='Whether to save the initial model state dict for visualization')
 
     args = parser.parse_args()
     return args
@@ -465,7 +471,19 @@ class MovingMNIST(Dataset):
             input_frames = self.transform(input_frames)
             target_frames = self.transform(target_frames)
 
-        return torch.from_numpy(input_frames), torch.from_numpy(target_frames)
+        return torch.from_numpy(input_frames), torch.from_numpy(target_frames), torch.from_numpy(input_frames), torch.from_numpy(target_frames)  # also return the original input frames for visualization
+
+class DiffMovingMnist(MovingMNIST):
+    def __getitem__(self, idx):
+        input_frames, target_frames, _, _ = super().__getitem__(idx)
+        # compute the differences between consecutive frames for the input sequence
+        input_diffs = input_frames[1:] - input_frames[:-1]  # shape: [n_frames_input-1, 1, 64, 64]
+        target_diffs = target_frames[1:] - target_frames[:-1]  # shape: [n_frames_output-1, 1, 64, 64]
+        
+        input_diffs = torch.cat([input_frames[0].unsqueeze(0), input_diffs], dim=0)  # prepend the first input frame to the input diffs to help the model know where to start from
+        target_diffs = torch.cat([(input_frames[-1]-target_frames[0]).unsqueeze(0), target_diffs], dim=0)  # prepend the last input frame to the target diffs to help the model know where to start from
+
+        return input_diffs, target_diffs, input_frames, target_frames  # also return the original input and target frames for visualization
 
 if __name__ == '__main__':
     args = parse_args()
@@ -473,17 +491,28 @@ if __name__ == '__main__':
 
     res_string = 'residual' if args.residual else 'no_residual'
     bidir_string = 'bidirectional' if args.bidirectional else 'unidirectional'
-    save_path = os.path.join(BASE_PATH, f"moving_mnist/{str(args.arch)}_{str(args.encoder_layer_reps)}_{args.loss}_{str(args.loss_coefficient)}_{res_string}_{bidir_string}_{str(args.layers)}_{str(args.hidden_dim)}_predictor_results")
+    note_string = f"_{args.note}" if args.note else ''
+    save_path = os.path.join(BASE_PATH, f"moving_mnist/{str(args.arch)}_{str(args.encoder_layer_reps)}_{args.loss}_{str(args.loss_coefficient)}_{res_string}_{bidir_string}_{str(args.layers)}_{str(args.hidden_dim)}{note_string}_predictor_results")
     os.makedirs(save_path, exist_ok=True)
 
-    dataset_train = MovingMNIST(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=True)
-    train_loader = DataLoader(dataset_train, batch_size=32, shuffle=True)
+    if args.dataset == 'moving_mnist':
+        dataset_train = MovingMNIST(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=True)
+        train_loader = DataLoader(dataset_train, batch_size=32, shuffle=True)
+    
+        dataset_test = MovingMNIST(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=False)
+        test_loader = DataLoader(dataset_test, batch_size=1, shuffle=True)
+    elif args.dataset == 'diff_moving_mnist':
+        dataset_train = DiffMovingMnist(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=True)
+        train_loader = DataLoader(dataset_train, batch_size=32, shuffle=True)
 
-    dataset_test = MovingMNIST(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=False)
-    test_loader = DataLoader(dataset_test, batch_size=1, shuffle=True)
+        dataset_test = DiffMovingMnist(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=False)
+        test_loader = DataLoader(dataset_test, batch_size=1, shuffle=True)
 
-    encoder_num_layers = 3
+    encoder_num_layers = args.encoder_num_layers
     encoder_first_hidden_dim = 128
+
+    height = 64 // (2 ** (encoder_num_layers)) if args.arch != 'MambaMultiPredictor' else 64
+    width = 64 // (2 ** (encoder_num_layers)) if args.arch != 'MambaMultiPredictor' else 64
 
     delay_config = {
         'core_method': args.arch,
@@ -491,9 +520,9 @@ if __name__ == '__main__':
             'future_delay': 500,  # ms
             'future_delay_list': [100, 200, 300, 400, 500],
             'past_k': 5,
-            'input_channels': args.encoder_out_features,  # the output channel dimension of the encoder
-            'height': 64 // (2 ** (encoder_num_layers + 1)),
-            'width': 64 // (2 ** (encoder_num_layers + 1)),
+            'input_channels': args.encoder_out_features if args.arch != 'MambaMultiPredictor' else 1,  # the output channel dimension of the encoder
+            'height': height,
+            'width': width,
             'hidden_dim': args.hidden_dim,
             'patch_size': 4,
             'num_layers': args.layers,
@@ -503,22 +532,42 @@ if __name__ == '__main__':
             'use_bidirectional': args.bidirectional,
             'dropout': 0.0,
             'residual': args.residual,
+            "image_mode": True if args.arch == 'MambaMultiPredictor' else False,
             'encoder_config': {
+                'type': 'dino',
                 'input_channels': 1,  # the input channel dimension for the encoder
+                'hidden_dim': 512,
                 'num_layers': encoder_num_layers,
                 "reps": [args.encoder_layer_reps] * encoder_num_layers,
                 "channels": [encoder_first_hidden_dim + (args.encoder_out_features - encoder_first_hidden_dim) * i // encoder_num_layers for i in range(1, encoder_num_layers + 1)],
                 "strides": [2] * encoder_num_layers,
+            },
+            'decoder_config': {
+                'type': 'linear',
+                'input_channels': args.hidden_dim,  # the input channel dimension for the encoder
+                'output_channels': 1,  # the output channel dimension for the decoder
+                'height': 64,
+                'width': 64,
+                'num_layers': encoder_num_layers,
+                "reps": [args.encoder_layer_reps] * encoder_num_layers,
+                "channels": [encoder_first_hidden_dim + (args.encoder_out_features - encoder_first_hidden_dim) * i // encoder_num_layers for i in range(1, encoder_num_layers + 1)][::-1],
+                "strides": [2] * encoder_num_layers,
             }
         }
     }
-
-    print(delay_config)
     
     model = build_delay_module(delay_config)
+    print(model)
 
     # save the model for visualization
-    #torch.save(model.state_dict(), os.path.join(save_path, 'model_initial.pth'))
+    if args.save_model:
+        with torch.no_grad():
+            model(torch.randn(1, delay_config['args']['past_k'], delay_config['args']['input_channels'], delay_config['args']['height'], delay_config['args']['width']))
+        
+        torch.save(model.state_dict(), os.path.join(save_path, 'model_initial.pth'))
+
+    #save the config for reproducibility
+    yaml_utils.save_yaml(delay_config, os.path.join(save_path, 'config.yaml'))
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -544,12 +593,44 @@ if __name__ == '__main__':
         #criterion = torch.nn.L1Loss()
         if args.loss == 'l1':
             criterion = torch.nn.L1Loss()
+        if args.loss.startswith('l1ssim'):
+            beta = float(args.loss.split('_')[1]) if '_' in args.loss else 1.0
+            class L1SSIMLoss(torch.nn.Module):
+                def __init__(self, ssim_weight=0.5):
+                    super(L1SSIMLoss, self).__init__()
+                    self.l1_loss = torch.nn.SmoothL1Loss(beta=ssim_weight)
+                    self.ssim_loss = SSIM(data_range=255.0, size_average=True, win_size=11, win_sigma=1.5, channel=1, spatial_dims=2)
+                    self.ssim_weight = ssim_weight
+
+                def forward(self, pred, gt):
+                    l1 = self.l1_loss(pred, gt)
+                    pred = einops.rearrange(pred, 'b t c h w -> (b t) c h w')
+                    gt = einops.rearrange(gt, 'b t c h w -> (b t) c h w')
+                    ssim_val = self.ssim_loss(pred, gt)
+                    return l1 + (1 - ssim_val)
+
+            criterion = L1SSIMLoss(ssim_weight=beta)
         elif args.loss == 'mse':
             criterion = torch.nn.MSELoss()
         elif args.loss.startswith('huber'):
             # extract delta from the loss name, e.g., 'huber_1.0' -> delta=1.0
             beta = float(args.loss.split('_')[1]) if '_' in args.loss else 1.0
             criterion = torch.nn.SmoothL1Loss(beta=beta)
+        elif args.loss.startswith('charb'):
+            # extract delta from the loss name, e.g., 'huber_1.0' -> delta=1.0
+            beta = float(args.loss.split('_')[1]) if '_' in args.loss else 1.0
+            class CharbonnierLoss(torch.nn.Module):
+                def __init__(self, beta=1.0, eps=1e-6):
+                    super(CharbonnierLoss, self).__init__()
+                    self.beta = beta
+                    self.eps = eps
+
+                def forward(self, pred, gt):
+                    diff = pred - gt
+                    loss = torch.mean(torch.pow(diff * diff + self.eps * self.eps, self.beta))
+                    return loss
+                
+            criterion = CharbonnierLoss(beta=beta)
         elif args.loss == 'bce':
             criterion = torch.nn.BCEWithLogitsLoss()
         elif args.loss == 'perceptual':
@@ -635,13 +716,13 @@ if __name__ == '__main__':
     num_steps = len(train_loader)
     lr_scheduler_config = {
         'lr_scheduler': {
-            'core_method': 'multistep',
+            'core_method': 'none',
             'gamma': 0.01,
             'step_size': [20]
         }
     }
 
-    scheduler = train_utils.setup_lr_schedular(lr_scheduler_config, optimizer, num_steps)
+    #scheduler = train_utils.setup_lr_schedular(lr_scheduler_config, optimizer, num_steps)
     loss_per_epoch = []
     validation_loss_per_epoch = []
 
@@ -652,7 +733,7 @@ if __name__ == '__main__':
 
         pbar2 = tqdm.tqdm(total=len(train_loader), leave=True)
         model.train()
-        for batch_idx, (inputs, targets) in enumerate(train_loader):
+        for batch_idx, (inputs, targets, input_frames, target_frames) in enumerate(train_loader):
             # inputs shape: [batch, K, 1, 64, 64]
             # targets shape: [batch, K, 1, 64, 64]
             model.zero_grad()
@@ -660,14 +741,20 @@ if __name__ == '__main__':
 
             inputs = inputs.to(device)
             targets = targets.to(device)
-            
+            if "diff" in args.dataset:
+                input_frames = input_frames.to(device)
+                target_frames = target_frames.to(device)
+            else:
+                input_frames = inputs
+                target_frames = targets
+
             prediction, intermediate = model(inputs)  # prediction shape: [batch, K, 1, 64, 64]
 
             final_loss = criterion(intermediate, targets) * loss_coefficient
             valid_train_loss.append(final_loss.item())
 
             if (batch_idx + 1) % 25 == 0:
-                show_pred_gt(intermediate, targets, inputs, f'epoch_{epoch}_iter_{batch_idx}', save_path=save_path)
+               show_pred_gt(intermediate, targets, inputs, f'epoch_{epoch}_iter_{batch_idx}', save_path=save_path)
             
             pbar2.update(1)
             final_loss.backward()
@@ -675,22 +762,25 @@ if __name__ == '__main__':
         
         loss_per_epoch.append(statistics.mean(valid_train_loss))
 
-        if lr_scheduler_config['lr_scheduler']['core_method'] != 'cosineannealwarm':
-            scheduler.step()
-        if lr_scheduler_config['lr_scheduler']['core_method'] == 'cosineannealwarm':
-            scheduler.step_update(epoch * num_steps + 1)
+        #if lr_scheduler_config['lr_scheduler']['core_method'] != 'cosineannealwarm':
+        #    scheduler.step()
+        #if lr_scheduler_config['lr_scheduler']['core_method'] == 'cosineannealwarm':
+        #    scheduler.step_update(epoch * num_steps + 1)
 
         valid_ave_loss = []
             # Create the dictionary for evaluation.
             # also store the confidence score for each prediction
             
         with torch.no_grad():
-            for i, (inputs, targets) in tqdm.tqdm(enumerate(test_loader)):
+            for i, (inputs, targets, input_frames, target_frames) in tqdm.tqdm(enumerate(test_loader)):
                 #print('test step %d' % i)
                 model.eval()
 
                 inputs = inputs.to(device)
                 targets = targets.to(device)
+                if "diff" in args.dataset:
+                    input_frames = input_frames.to(device)
+                    target_frames = target_frames.to(device)
 
                 feature_pred, intermediate_preds = model(inputs)
 
