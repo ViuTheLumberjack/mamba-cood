@@ -36,7 +36,7 @@ class Decoder(torch.nn.Module):
     def __init__(self, args):
         super(Decoder, self).__init__()
         self.out_channels = args.get('output_channels', 1)
-        self.hidden_dim = args.get('hidden_dim', 256)
+        self.hidden_dim = args.get('input_channels', 256)
         self.layers = args.get('layers', 3)
 
         self.arch = torch.nn.ModuleList()

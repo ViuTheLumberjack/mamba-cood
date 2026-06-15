@@ -360,6 +360,7 @@ def parse_args():
     parser.add_argument('--loss', type=str, default='l1', help='Loss function to use')
     parser.add_argument('--layers', type=int, default=5, help='Number of Mamba blocks to use')
     
+    parser.add_argument('--image_mode', action='store_true', help='Whether to use image mode for Mamba blocks')
     parser.add_argument('--encoder_out_features', type=int, default=768, help='Number of output features for last encoder layer')
     parser.add_argument('--encoder_layer_reps', type=int, default=2, help='Number of repetitions for each encoder layer')
     parser.add_argument('--encoder_num_layers', type=int, default=3, help='Number of layers in the encoder')
@@ -532,18 +533,18 @@ if __name__ == '__main__':
             'use_bidirectional': args.bidirectional,
             'dropout': 0.0,
             'residual': args.residual,
-            "image_mode": True if args.arch == 'MambaMultiPredictor' else False,
+            "image_mode": args.image_mode,
             'encoder_config': {
-                'type': 'dino',
+                'type': 'conv',
                 'input_channels': 1,  # the input channel dimension for the encoder
-                'hidden_dim': 512,
+                'hidden_dim': args.encoder_out_features,
                 'num_layers': encoder_num_layers,
                 "reps": [args.encoder_layer_reps] * encoder_num_layers,
                 "channels": [encoder_first_hidden_dim + (args.encoder_out_features - encoder_first_hidden_dim) * i // encoder_num_layers for i in range(1, encoder_num_layers + 1)],
                 "strides": [2] * encoder_num_layers,
             },
             'decoder_config': {
-                'type': 'linear',
+                'type': 'conv',
                 'input_channels': args.hidden_dim,  # the input channel dimension for the encoder
                 'output_channels': 1,  # the output channel dimension for the decoder
                 'height': 64,
@@ -590,7 +591,6 @@ if __name__ == '__main__':
         }
         criterion = train_utils.create_loss(loss_config)
     else:
-        #criterion = torch.nn.L1Loss()
         if args.loss == 'l1':
             criterion = torch.nn.L1Loss()
         if args.loss.startswith('l1ssim'):
@@ -598,7 +598,7 @@ if __name__ == '__main__':
             class L1SSIMLoss(torch.nn.Module):
                 def __init__(self, ssim_weight=0.5):
                     super(L1SSIMLoss, self).__init__()
-                    self.l1_loss = torch.nn.SmoothL1Loss(beta=ssim_weight)
+                    self.l1_loss = torch.nn.SmoothL1Loss(beta=0.5)
                     self.ssim_loss = SSIM(data_range=255.0, size_average=True, win_size=11, win_sigma=1.5, channel=1, spatial_dims=2)
                     self.ssim_weight = ssim_weight
 
@@ -607,17 +607,15 @@ if __name__ == '__main__':
                     pred = einops.rearrange(pred, 'b t c h w -> (b t) c h w')
                     gt = einops.rearrange(gt, 'b t c h w -> (b t) c h w')
                     ssim_val = self.ssim_loss(pred, gt)
-                    return l1 + (1 - ssim_val)
+                    return (1 - self.ssim_weight) * l1 + self.ssim_weight * (1 - ssim_val)
 
             criterion = L1SSIMLoss(ssim_weight=beta)
         elif args.loss == 'mse':
             criterion = torch.nn.MSELoss()
         elif args.loss.startswith('huber'):
-            # extract delta from the loss name, e.g., 'huber_1.0' -> delta=1.0
             beta = float(args.loss.split('_')[1]) if '_' in args.loss else 1.0
             criterion = torch.nn.SmoothL1Loss(beta=beta)
         elif args.loss.startswith('charb'):
-            # extract delta from the loss name, e.g., 'huber_1.0' -> delta=1.0
             beta = float(args.loss.split('_')[1]) if '_' in args.loss else 1.0
             class CharbonnierLoss(torch.nn.Module):
                 def __init__(self, beta=1.0, eps=1e-6):
@@ -716,13 +714,13 @@ if __name__ == '__main__':
     num_steps = len(train_loader)
     lr_scheduler_config = {
         'lr_scheduler': {
-            'core_method': 'none',
-            'gamma': 0.01,
+            'core_method': 'exponential', #'multistep',
+            'gamma': 0.25,
             'step_size': [20]
         }
     }
 
-    #scheduler = train_utils.setup_lr_schedular(lr_scheduler_config, optimizer, num_steps)
+    scheduler = train_utils.setup_lr_schedular(lr_scheduler_config, optimizer, num_steps)
     loss_per_epoch = []
     validation_loss_per_epoch = []
 

@@ -85,7 +85,7 @@ class MambaUNet(nn.Module):
         
         _, predictions = self.predictor(feat_enc)
 
-        preds = self.decoder(predictions, hidden_states)
+        preds = self.decoder(predictions, None)
         
         return preds[:, self.prediction_horizon_idx], preds
 
