@@ -1,3 +1,4 @@
+import cv2
 import torch
 import numpy as np
 import statistics
@@ -361,6 +362,7 @@ def parse_args():
     parser.add_argument('--layers', type=int, default=5, help='Number of Mamba blocks to use')
     
     parser.add_argument('--image_mode', action='store_true', help='Whether to use image mode for Mamba blocks')
+    parser.add_argument('--predictor_type', type=str, default='4d', help='Type of predictor to use: simple or 4d')
     parser.add_argument('--encoder_out_features', type=int, default=768, help='Number of output features for last encoder layer')
     parser.add_argument('--encoder_layer_reps', type=int, default=2, help='Number of repetitions for each encoder layer')
     parser.add_argument('--encoder_num_layers', type=int, default=3, help='Number of layers in the encoder')
@@ -375,6 +377,69 @@ def parse_args():
 
     args = parser.parse_args()
     return args
+
+def flow_to_rgb(flow_map, max_displacement=None):
+    """
+    Converts a 2D optical flow map into an RGB visualization image using HSV space.
+    
+    Args:
+        flow_map (numpy.ndarray): Array of shape (H, W, 2) containing [dx, dy]
+        max_displacement (float): Optional scaling factor for brightness. If None,
+                                  it scales relative to the frame's max speed.
+    Returns:
+        numpy.ndarray: RGB image array of shape (H, W, 3), type uint8.
+    """
+    h, w, _ = flow_map.shape
+    dx = flow_map[..., 0]
+    dy = flow_map[..., 1]
+    
+    # 1. Calculate magnitude (speed) and angle (direction) of the motion vectors
+    magnitude, angle = cv2.cartToPolar(dx, dy, angleInDegrees=True)
+    
+    # 2. Create a blank HSV canvas
+    hsv = np.zeros((h, w, 3), dtype=np.uint8)
+    
+    # Hue: Map 0-360 degrees to OpenCV's 0-179 range (since uint8 maxes at 255)
+    hsv[..., 0] = angle / 2
+    
+    # Saturation: Keep at maximum intensity
+    hsv[..., 1] = 255
+    
+    # Value: Normalize the magnitude to fit nicely into 0-255 brightness
+    if max_displacement:
+        normalized_magnitude = np.clip((magnitude / max_displacement) * 255, 0, 255)
+        hsv[..., 2] = normalized_magnitude.astype(np.uint8)
+    else:
+        hsv[..., 2] = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX)
+        
+    # 3. Convert back to RGB for visualization packages
+    rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+    return rgb
+
+def visualize_tensor_batch(flow_tensor, max_displacement=10.0):
+    """
+    Converts a PyTorch model prediction batch into a sequence of viewable RGB images.
+    
+    Args:
+        flow_tensor (torch.Tensor): Shape (B, T, 2, H, W)
+    """
+    # Undo your dataset scaling factor if you divided by 10 during loading
+    B, T, C, H, W = flow_tensor.shape
+    flow_tensor = flow_tensor * 10.0 
+    
+    # Detach gradients and transfer to numpy
+    flow_np = flow_tensor.detach().cpu().numpy()
+    
+    # Permute from (N, 2, H, W) -> (N, H, W, 2)
+    flow_np = np.transpose(flow_np, (0, 1, 3, 4, 2))
+    
+    rgb_images = []
+    for batch in flow_np:
+        for frame in batch:
+            rgb_img = flow_to_rgb(frame, max_displacement=max_displacement)
+            rgb_images.append(rgb_img)
+        
+    return einops.rearrange(torch.Tensor(np.array(rgb_images)), "(b t) h w c -> b t c h w", b=B, t=T)
 
 def show_pred_gt(pred, gt, input_frames, iteration, save_path="/equilibrium/students/svatamanelu/moving_mnist_predictor_results"):
     #pred = pred.cpu().detach().numpy()
@@ -395,21 +460,30 @@ def show_pred_gt(pred, gt, input_frames, iteration, save_path="/equilibrium/stud
     axes[0][2].set_title(f'Ground Truth Frame')
 
     for i in range(pred_sample.shape[0]):
-        input_frame = input_sample[i, 0] * 255.0  # scale back to [0, 255]
-        pred_frame = pred_sample[i, 0] * 255.0  # scale back to [0, 255]
-        gt_frame = gt_sample[i, 0] * 255.0        # scale back to [0, 255]
+        with torch.no_grad():
+            if pred_sample.shape[1] == 1:  # if the prediction is flow, visualize it as RGB
+                input_frame = input_sample[i, 0] * 255.0  # scale back to [0, 255]
+                pred_frame = pred_sample[i, 0] * 255.0  # scale back to [0, 255]
+                gt_frame = gt_sample[i, 0] * 255.0        # scale back to [0, 255]
+                cmap = 'gray'
+            else:
+                # if the prediction is an image, don't scale it
+                input_frame = einops.rearrange(input_sample[i], 'c h w -> h w c')
+                pred_frame = einops.rearrange(pred_sample[i], 'c h w -> h w c')
+                gt_frame = einops.rearrange(gt_sample[i], 'c h w -> h w c')
+                cmap = None  # use default colormap for RGB images
+            
+            input_frame = input_frame.cpu().detach().numpy().astype(np.uint8)
+            pred_frame = pred_frame.cpu().detach().numpy().astype(np.uint8)
+            gt_frame = gt_frame.cpu().detach().numpy().astype(np.uint8)
 
-        input_frame = input_frame.cpu().detach().numpy().astype(np.uint8)
-        pred_frame = pred_frame.cpu().detach().numpy().astype(np.uint8)
-        gt_frame = gt_frame.cpu().detach().numpy().astype(np.uint8)
-
-        # Save the frames side by side using matplotlib
-        axes[i][0].imshow(input_frame, cmap='gray')
-        axes[i][0].axis('off')
-        axes[i][1].imshow(pred_frame, cmap='gray')
-        axes[i][1].axis('off')
-        axes[i][2].imshow(gt_frame, cmap='gray')
-        axes[i][2].axis('off')
+            # Save the frames side by side using matplotlib
+            axes[i][0].imshow(input_frame, cmap=cmap)
+            axes[i][0].axis('off')
+            axes[i][1].imshow(pred_frame, cmap=cmap)
+            axes[i][1].axis('off')
+            axes[i][2].imshow(gt_frame, cmap=cmap)
+            axes[i][2].axis('off')
 
     plt.tight_layout()
     plt.savefig(os.path.join(save_path, f'{iteration}.png'))
@@ -486,6 +560,41 @@ class DiffMovingMnist(MovingMNIST):
 
         return input_diffs, target_diffs, input_frames, target_frames  # also return the original input and target frames for visualization
 
+class FlowMovingMnist(MovingMNIST):
+    def __getitem__(self, idx):
+        video = self.dataset[idx]  # Shape: (T, H, W)
+        T, H, W = video.shape
+        
+        flow_maps = []
+        for t in range(T - 1):
+            prev_frame = video[t]
+            next_frame = video[t + 1]
+            
+            # Compute Dense Optical Flow (Farneback)
+            flow = cv2.calcOpticalFlowFarneback(
+                prev_frame, next_frame, None,
+                pyr_scale=0.5, levels=3, winsize=15,
+                iterations=3, poly_n=5, poly_sigma=1.2, flags=0
+            )
+            # flow shape: (H, W, 2) -> representing [dx, dy]
+            flow_maps.append(flow)
+            
+        flow_maps = np.array(flow_maps)  # Shape: (T-1, H, W, 2)
+        
+        # Convert to PyTorch Tensor and rearrange to (T-1, channels, H, W)
+        flow_tensor = torch.tensor(flow_maps, dtype=torch.float32).permute(0, 3, 1, 2)
+
+        print(flow_tensor.max())  # Debugging: Check the shape of the flow tensor
+        
+        # Normalize the flow values (Crucial for deep learning convergence)
+        flow_tensor = flow_tensor / 64.0  # Simple scaling, tweak based on max displacement
+        
+        # Split into input sequences and target labels
+        input_flows = flow_tensor[:self.n_frames_input]
+        target_flows = flow_tensor[self.n_frames_input : self.n_frames_input + self.n_frames_output]
+
+        return input_flows, target_flows, video[:self.n_frames_input], video[self.n_frames_input : self.n_frames_input + self.n_frames_output]  # also return the original input and target frames for visualization
+
 if __name__ == '__main__':
     args = parse_args()
     print(args)
@@ -508,7 +617,15 @@ if __name__ == '__main__':
 
         dataset_test = DiffMovingMnist(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=False)
         test_loader = DataLoader(dataset_test, batch_size=1, shuffle=True)
+    elif args.dataset == 'flow_moving_mnist':
+        dataset_train = FlowMovingMnist(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=True)
+        train_loader = DataLoader(dataset_train, batch_size=32, shuffle=True)
 
+        dataset_test = FlowMovingMnist(root=os.path.join(BASE_PATH, 'mnist_test_seq.npy'), is_train=False)
+        test_loader = DataLoader(dataset_test, batch_size=1, shuffle=True)
+    else:
+        raise ValueError(f"Unsupported dataset: {args.dataset}")
+    
     encoder_num_layers = args.encoder_num_layers
     encoder_first_hidden_dim = 128
 
@@ -518,6 +635,7 @@ if __name__ == '__main__':
     delay_config = {
         'core_method': args.arch,
         'args': {
+            'predictor_type': args.predictor_type, # simple or 4d
             'future_delay': 500,  # ms
             'future_delay_list': [100, 200, 300, 400, 500],
             'past_k': 5,
@@ -536,7 +654,7 @@ if __name__ == '__main__':
             "image_mode": args.image_mode,
             'encoder_config': {
                 'type': 'conv',
-                'input_channels': 1,  # the input channel dimension for the encoder
+                'input_channels': 1 if args.dataset != 'flow_moving_mnist' else 2,  # the input channel dimension for the encoder
                 'hidden_dim': args.encoder_out_features,
                 'num_layers': encoder_num_layers,
                 "reps": [args.encoder_layer_reps] * encoder_num_layers,
@@ -546,7 +664,7 @@ if __name__ == '__main__':
             'decoder_config': {
                 'type': 'conv',
                 'input_channels': args.hidden_dim,  # the input channel dimension for the encoder
-                'output_channels': 1,  # the output channel dimension for the decoder
+                'output_channels': 1 if args.dataset != 'flow_moving_mnist' else 2,  # the output channel dimension for the decoder
                 'height': 64,
                 'width': 64,
                 'num_layers': encoder_num_layers,
@@ -714,9 +832,9 @@ if __name__ == '__main__':
     num_steps = len(train_loader)
     lr_scheduler_config = {
         'lr_scheduler': {
-            'core_method': 'exponential', #'multistep',
-            'gamma': 0.25,
-            'step_size': [20]
+            'core_method': 'multistep',
+            'gamma': 0.05,
+            'step_size': [20, 45, 70]
         }
     }
 
@@ -751,8 +869,17 @@ if __name__ == '__main__':
             final_loss = criterion(intermediate, targets) * loss_coefficient
             valid_train_loss.append(final_loss.item())
 
-            if (batch_idx + 1) % 25 == 0:
-               show_pred_gt(intermediate, targets, inputs, f'epoch_{epoch}_iter_{batch_idx}', save_path=save_path)
+            if (batch_idx) % 125 == 0:
+                if args.dataset == 'flow_moving_mnist':
+                        show_pred_gt(
+                            visualize_tensor_batch(intermediate),
+                            visualize_tensor_batch(targets),
+                            visualize_tensor_batch(inputs),
+                            f'epoch_{epoch}_iter_{batch_idx}',
+                            save_path=save_path
+                        )
+                else:
+                    show_pred_gt(intermediate, targets, inputs, f'epoch_{epoch}_iter_{batch_idx}', save_path=save_path)
             
             pbar2.update(1)
             final_loss.backward()
@@ -760,10 +887,10 @@ if __name__ == '__main__':
         
         loss_per_epoch.append(statistics.mean(valid_train_loss))
 
-        #if lr_scheduler_config['lr_scheduler']['core_method'] != 'cosineannealwarm':
-        #    scheduler.step()
-        #if lr_scheduler_config['lr_scheduler']['core_method'] == 'cosineannealwarm':
-        #    scheduler.step_update(epoch * num_steps + 1)
+        if lr_scheduler_config['lr_scheduler']['core_method'] != 'cosineannealwarm':
+            scheduler.step()
+        if lr_scheduler_config['lr_scheduler']['core_method'] == 'cosineannealwarm':
+            scheduler.step_update(epoch * num_steps + 1)
 
         valid_ave_loss = []
             # Create the dictionary for evaluation.
@@ -783,7 +910,16 @@ if __name__ == '__main__':
                 feature_pred, intermediate_preds = model(inputs)
 
                 if (i + 1) % 500 == 0:
-                    show_pred_gt(intermediate_preds, targets, inputs, f'test_epoch_{epoch}_iter_{i}', save_path=save_path)
+                    if args.dataset == 'flow_moving_mnist':
+                        show_pred_gt(
+                            visualize_tensor_batch(intermediate_preds),
+                            visualize_tensor_batch(targets),
+                            visualize_tensor_batch(inputs),
+                            f'test_epoch_{epoch}_iter_{i}',
+                            save_path=save_path
+                        )
+                    else:
+                        show_pred_gt(intermediate_preds, targets, inputs, f'test_epoch_{epoch}_iter_{i}', save_path=save_path)
             
                 final_loss = criterion(intermediate_preds, targets) * loss_coefficient
                 valid_ave_loss.append(final_loss.item())

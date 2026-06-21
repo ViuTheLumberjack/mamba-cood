@@ -151,9 +151,9 @@ model:
       # add decoder later
 
     delay:
-      core_method: MambaMultiPredictor
+      core_method: MambaMultiPredictor4D
       args:
-        predictor_type: simple
+        predictor_type: 4d
         future_delay: *future_delay  # ms
         future_delay_list: 
           - 100
@@ -164,13 +164,13 @@ model:
         input_channels: 8
         height: 48
         width: 176
-        hidden_dim: 768
+        hidden_dim: 128
         patch_size: 4
-        num_layers: 8
+        num_layers: 1
         d_state: 64
         d_conv: 4
         expand: 2
-        use_bidirectional: True
+        use_bidirectional: False
         dropout: 0.2
         residual: True
         image_mode: True
@@ -180,7 +180,7 @@ loss:
   args:
     cls_weight: 1.0
     reg: 2.0
-
+    
     delay: 0.5
     delay_coeff: 0.85
 

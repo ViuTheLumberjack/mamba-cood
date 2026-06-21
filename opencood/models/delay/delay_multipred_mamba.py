@@ -162,7 +162,7 @@ class MambaMultiPredictor(nn.Module):
         Returns:
             [B, T_preds, C, H, W] predicted next frame
         """
-        print(f"Input shape: {x.shape}")
+        #print(f"Input shape: {x.shape}")
 
         # Patchify and add positional encoding
         if self.image_mode:
@@ -176,7 +176,7 @@ class MambaMultiPredictor(nn.Module):
         # Add prediction token at the end
         num_pred_tokens = self.num_future_preds * self.num_patches
         pred_tokens = self.pred_token.expand(B, -1, -1)
-        print(f"Sequence shape before adding pred token: {pred_tokens.shape}")
+        #print(f"Sequence shape before adding pred token: {pred_tokens.shape}")
         #print(f"Sequence shape before adding pred token: {seq.shape}")
         #print(f"Prediction token shape: {pred_tokens.shape}")
         seq = torch.cat([seq, pred_tokens], dim=1)
@@ -207,14 +207,14 @@ class MambaMultiPredictor(nn.Module):
 
             preds.append(pred_frame)
         
-        preds = torch.stack(preds, dim=1)  # [B, num_future_preds, C, H, W]
-        print(f"Predictions shape before residual: {preds.shape}")
+        preds = torch.stack(preds, dim=0)  # [B, num_future_preds, C, H, W]
+        #print(f"Predictions shape before residual: {preds.shape}")
         if self.residual_connection:
             # Add residual connection from last input frame
             last_frame = x[:, -1]  # [B, C, H, W]
-            preds = preds + last_frame.unsqueeze(1)  # Broadcast to all predictions
+            preds = preds + last_frame.unsqueeze(0)  # Broadcast to all predictions
 
-        feat_enc = preds[:, self.prediction_horizon_idx]  # [B, C, H, W]
+        feat_enc = preds[self.prediction_horizon_idx]  # [B, C, H, W]
         
         return feat_enc, preds
 

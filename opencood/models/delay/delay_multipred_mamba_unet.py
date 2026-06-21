@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from mamba_ssm import Mamba, Mamba2
 from einops.layers.torch import Rearrange 
 from opencood.models.delay.delay_multipred_mamba import MambaMultiPredictor
+from opencood.models.delay.delay_multipred_mamba_4dscan import MambaMultiPredictor4D
 
 from .encoders import get_encoder, get_decoder
 
@@ -67,7 +68,7 @@ class MambaUNet(nn.Module):
         self.prediction_horizon_idx = self.prediction_horizon_list.index(self.prediction_horizon)
 
         self.encoder = get_encoder(self.encoder_config)
-        self.predictor = MambaMultiPredictor(args)
+        self.predictor = MambaMultiPredictor(args) if args.get('predictor_type', 'simple') == 'simple' else MambaMultiPredictor4D(args)
         self.decoder = get_decoder(self.decoder_config)
 
     def forward(self, x):
@@ -81,13 +82,13 @@ class MambaUNet(nn.Module):
         B, T, C, H, W = x.shape
 
         # Patchify and add positional encoding
-        feat_enc, hidden_states = self.encoder(x)
+        feat_enc, _ = self.encoder(x)
         
         _, predictions = self.predictor(feat_enc)
 
         preds = self.decoder(predictions, None)
         
-        return preds[:, self.prediction_horizon_idx], preds
+        return preds[self.prediction_horizon_idx], preds
 
 if __name__ == '__main__':
     B, T, C, H, W = 2, 5, 8, 48, 176

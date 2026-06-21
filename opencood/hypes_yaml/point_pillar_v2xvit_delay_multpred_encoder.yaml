@@ -3,7 +3,7 @@ root_dir: '/equilibrium/datasets/V2X/v2xset/train'
 validate_dir: '/equilibrium/datasets/V2X/v2xset/validate'
 
 wild_setting:
-  async: false
+  async: true
   async_mode: 'sim'
   async_overhead: &future_delay 400
   seed: 25
@@ -24,7 +24,7 @@ delay:
 
 yaml_parser: "load_point_pillar_params"
 train_params:
-  batch_size: &batch_size 1
+  batch_size: &batch_size 2
   epoches: 60
   eval_freq: 1
   save_freq: 1
@@ -151,7 +151,7 @@ model:
       # add decoder later
 
     delay:
-      core_method: MambaMultiPredictor
+      core_method: MambaUNet
       args:
         predictor_type: simple
         future_delay: *future_delay  # ms
@@ -161,12 +161,12 @@ model:
           - 300
           - 400   # ms
         past_k: 4
-        input_channels: 8
-        height: 48
-        width: 176
-        hidden_dim: 768
+        input_channels: &hidden_dim 128
+        height: 6
+        width: 22
+        hidden_dim: *hidden_dim
         patch_size: 4
-        num_layers: 8
+        num_layers: 16
         d_state: 64
         d_conv: 4
         expand: 2
@@ -174,19 +174,48 @@ model:
         dropout: 0.2
         residual: True
         image_mode: True
-
+        encoder_config:
+          type: conv
+          input_channels: &in_channels 8
+          hidden_dim: *hidden_dim
+          num_layers: 2
+          reps: 
+            - 2
+            - 2
+          channels: 
+            - 384
+            - *hidden_dim
+          strides: 
+            - 2
+            - 2
+        decoder_config:
+          type: conv
+          input_channels: *hidden_dim
+          output_channels: *in_channels
+          height: 48
+          width: 176
+          num_layers: 2
+          reps: 
+            - 2
+            - 2
+          channels: 
+            - 384
+            - *hidden_dim
+          strides: 
+            - 2
+            - 2
 loss:
   core_method: point_pillar_loss
   args:
     cls_weight: 1.0
     reg: 2.0
-
+    
     delay: 0.5
-    delay_coeff: 0.85
+    delay_coeff: 0.8
 
 optimizer:
   core_method: Adam
-  lr: 0.01
+  lr: 0.001
   args:
     eps: 1e-10
     weight_decay: 1e-4

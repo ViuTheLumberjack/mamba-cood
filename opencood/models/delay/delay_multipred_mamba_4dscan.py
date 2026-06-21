@@ -112,17 +112,14 @@ class MambaMultiPredictor4D(nn.Module):
         super().__init__()
 
         self.image_mode = args.get('image_mode', True)
-        if self.image_mode:
-            self.input_channels = args.get('input_channels', 8)
-            self.height = args.get('height', 48)
-            self.width = args.get('width', 176)
-            self.patch_size = args.get('patch_size', 8)
 
-            self.input_dim = self.input_channels * self.patch_size * self.patch_size
-            self.num_patches = self.width * self.height #(self.height // self.patch_size) * (self.width // self.patch_size)
-        else:
-            self.input_dim = args.get('input_channels', 128)
-            self.num_patches = 1
+        self.input_channels = args.get('input_channels', 8)
+        self.height = args.get('height', 48)
+        self.width = args.get('width', 176)
+        self.patch_size = args.get('patch_size', 8)
+
+        self.input_dim = self.input_channels #* self.patch_size * self.patch_size
+        self.num_patches = self.width * self.height #(self.height // self.patch_size) * (self.width // self.patch_size)
 
         self.hidden_dim = args.get('hidden_dim', 512)
         self.num_layers = args.get('num_layers', 2)
@@ -141,13 +138,13 @@ class MambaMultiPredictor4D(nn.Module):
         self.past_k = args.get('past_k', 4) + 1 # Number of past frames to use for prediction (if using pred token)
 
         # Patch embedding
-        if self.image_mode:
-            self.scan = CrossScan2D()
+        self.scan = CrossScan2D()
 
-            self.flatten = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
-            self.embed = nn.Linear(self.input_dim, self.hidden_dim)
-            self.embed_norm = nn.RMSNorm(self.hidden_dim) if False else nn.Identity() 
-            self.embed_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
+        self.embed = nn.Linear(self.input_dim, self.hidden_dim)
+        self.embed_norm = nn.RMSNorm(self.hidden_dim) if False else nn.Identity() 
+        self.embed_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
+
+        self.unembed = nn.Linear(self.hidden_dim, self.input_dim)
 
         self.pos_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
         # Learnable positional encodings
@@ -167,25 +164,7 @@ class MambaMultiPredictor4D(nn.Module):
             for _ in range(self.num_layers)
         ]) for _ in range(4)])  # 4 parallel scan patterns
 
-        self.final_norm = nn.RMSNorm(self.hidden_dim)
-
-        self.reconstruction_heads = nn.ModuleList([
-            nn.Sequential(
-                nn.Sequential(
-                    nn.Linear(self.hidden_dim, self.hidden_dim),
-                    nn.GELU(),
-                    nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity(),
-                    nn.Linear(self.hidden_dim, self.input_dim)
-                ),
-                Rearrange('b np pd -> b pd np') if self.image_mode else nn.Identity(),
-                nn.Fold(
-                    output_size=(self.height, self.width), 
-                    kernel_size=self.patch_size, 
-                    stride=self.patch_size
-                ) if self.image_mode else nn.Identity()
-            )
-            for _ in range(len(args.get('future_delay_list', [0])))
-        ])        
+        self.final_norm = nn.RMSNorm(self.hidden_dim)     
 
     def patchify(self, x):
         """Convert frames to patches with embeddings"""
@@ -221,116 +200,64 @@ class MambaMultiPredictor4D(nn.Module):
         print(f"Input shape: {x.shape}")
 
         # Patchify and add positional encoding
-        if self.image_mode:
-            B, T, C, H, W = x.shape
-            if False:
-                patches = self.patchify(x)  # [B, T, num_patches, hidden_dim]
-                seq = einops.rearrange(patches, 'b t np hd -> b (t np) hd')
-            else: 
-                p = einops.rearrange(x, 'b t c h w -> (b t) c h w')
-                patches = self.scan(p)  # [B*T, 4, C, SEQ_LEN]
-                seq = einops.rearrange(patches, '(b t) s c np -> b s (t np) c', b=B, t=T)  # [B*T*4, num_patches, C]
-        else:
-            B, T, HD = x.shape
-            seq = x
+        B, T, C, H, W = x.shape
+        
+        p = einops.rearrange(x, 'b t c h w -> (b t) c h w')
+        p = self.scan(p)  # [B*T, 4, C, SEQ_LEN]
+        p = einops.rearrange(p, '(b t) s c np -> b s (t np) c', b=B, t=T)  # [B*T*4, num_patches, C]
+        
+        if self.input_dim != self.hidden_dim:
+            p = self.embed(p)
+            p = self.embed_norm(p)
+            p = self.embed_dropout(p)
         
         # Add prediction token at the end
         num_pred_tokens = self.num_future_preds * self.num_patches
         pred_tokens = self.pred_token.expand(B, -1, -1, -1)
-        print(f"Sequence shape before adding pred token: {seq.shape}")
-        print(f"Prediction token shape: {pred_tokens.shape}")
-        seq = torch.cat([seq, pred_tokens], dim=2)
-        seq = self.add_positional_encoding(seq)
+        #print(f"Sequence shape before adding pred token: {p.shape}")
+        #print(f"Prediction token shape: {pred_tokens.shape}")
+        p = torch.cat([p, pred_tokens], dim=2)
+        p = self.add_positional_encoding(p)
         
-        seq = einops.rearrange(seq, 'b s np hd -> s b np hd')  # [B, 4, T+T_pred, num_patches, hidden_dim]
+        p = einops.rearrange(p, 'b s np hd -> s b np hd')  # [B, 4, T+T_pred, num_patches, hidden_dim]
         # Process through Mamba2 blocks
         processed_seqs = []
         for i in range(4):
-            sc_seq = seq[i]
+            sc_seq = p[i].contiguous()
             block = self.blocks[i]
             # Extract sequence i: [B*T, C, H*W]
             sc_seq = block(sc_seq)
 
             processed_seqs.append(sc_seq)
         
-        seq = torch.stack(processed_seqs, dim=0)  # [B, 4, T+T_pred, num_patches, hidden_dim]
-        seq = self.final_norm(seq)
+        p = torch.stack(processed_seqs, dim=0)  # [B, 4, T+T_pred, num_patches, hidden_dim]
+        p = self.final_norm(p)
         
         # Extract prediction tokens output
-        pred_seq = seq[:, :, -num_pred_tokens:]  # [B, num_future_preds * num_patches, hidden_dim]
-        if self.image_mode:
-            if False:
-                pred_seq = einops.rearrange(
-                    pred_seq, 'b (f np) hd -> f b np hd', 
-                    f=self.num_future_preds, np=self.num_patches
-                )
-            else:
-                pred_seq = einops.rearrange(
-                    pred_seq, 's b (f np) hd -> (f b) s hd np',
-                    f=self.num_future_preds, np=self.num_patches
-                )
-                print(f"Pred sequence shape before unscan: {pred_seq.shape}")
-                pred_seq = self.scan.unscan(pred_seq, self.height, self.width)  # [B, hidden_dim, H, W]
-                pred_seq = einops.rearrange(pred_seq, '(f b) c h w -> b f c h w', f=self.num_future_preds)  # [B, num_patches, hidden_dim]
-        else: 
-            pred_seq = einops.rearrange(pred_seq, 'b f hd -> f b hd')
+        p = p[:, :, -num_pred_tokens:]  # [B, num_future_preds * num_patches, hidden_dim]
         
-        # Reconstruct each future prediction with its own head
-        if False:
-            preds = []
-            #for i, head in enumerate(self.reconstruction_heads):
-            for i in range(self.num_future_preds):
-                head = self.reconstruction_heads[i]
-                pred_frame = head(pred_seq[i])  # [B, num_patches, input_dim]
+        p = einops.rearrange(
+            p, 's b (f np) hd -> (f b) s hd np',
+            f=self.num_future_preds, np=self.num_patches
+        )
+        #print(f"Pred sequence shape before unscan: {p.shape}")
+        p = self.scan.unscan(p, self.height, self.width)  # [B, hidden_dim, H, W]
+        p = einops.rearrange(p, '(f b) c h w -> f b c h w', f=self.num_future_preds)  # [B, num_patches, hidden_dim]
+        
+        if self.input_dim != self.hidden_dim:
+            p = einops.rearrange(p, 'f b c h w -> f b h w c')
+            p = self.unembed(p)
+            p = einops.rearrange(p, 'f b h w c -> f b c h w')
 
-                preds.append(pred_frame)
-            
-            preds = torch.stack(preds, dim=1)  # [B, num_future_preds, C, H, W]
-        else:
-            preds = pred_seq
-        print(f"Predictions shape before residual: {preds.shape}")
+        #print(f"Predictions shape before residual: {p.shape}")
         if self.residual_connection:
             # Add residual connection from last input frame
             last_frame = x[:, -1]  # [B, C, H, W]
-            preds = preds + last_frame.unsqueeze(1)  # Broadcast to all predictions
+            p = p + last_frame.unsqueeze(0)  # Broadcast to all predictions
 
-        feat_enc = preds[:, self.prediction_horizon_idx]  # [B, C, H, W]
+        feat_enc = p[self.prediction_horizon_idx]  # [B, C, H, W]
         
-        return feat_enc, preds
-
-
-class AutoregressivePredictor(MambaMultiPredictor4D):
-    """Variant that can predict multiple future frames autoregressively"""
-    def __init__(self, args):
-        super().__init__(args)
-    
-    def forward(self, x, num_future_frames=1):
-        """
-        Args:
-            x: [B, T, C, H, W] input frames
-            num_future_frames: number of frames to predict into future
-        
-        Returns:
-            [B, num_future_frames, C, H, W] predicted future frames
-        """
-        B, T, C, H, W = x.shape
-        predictions = []
-        
-        current_input = x
-        
-        for _ in range(num_future_frames):
-            # Predict next frame
-            next_frame: torch.Tensor = super().forward(current_input)  # [B, C, H, W]
-            predictions.append(next_frame.unsqueeze(1))
-            
-            # Update input: remove oldest frame, add prediction
-            current_input = torch.cat([
-                current_input[:, 1:],  # Drop first frame
-                next_frame.unsqueeze(1)  # Add prediction
-            ], dim=1)
-        
-        return torch.cat(predictions, dim=1)  # [B, num_future_frames, C, H, W]
-
+        return feat_enc, p
 
 if __name__ == '__main__':
     B, T, C, H, W = 2, 5, 8, 48, 176

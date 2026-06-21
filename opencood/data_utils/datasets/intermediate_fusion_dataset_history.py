@@ -490,8 +490,7 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
         gt_features = torch.Tensor(np.concatenate(gt_features, axis=0))
         past_features = torch.Tensor(np.concatenate(past_features, axis=0)) 
         current_features = torch.Tensor(np.concatenate(current_features, axis=0))
-
-
+        
         output_dict['ego'].update({'object_bbx_center': object_bbx_center,
                                    'object_bbx_mask': object_bbx_mask,
                                    'processed_lidar': processed_lidar_torch_dict,

@@ -32,7 +32,7 @@ def train_parser():
     parser = argparse.ArgumentParser(description="synthetic data generation")
     parser.add_argument("--hypes_yaml", type=str, default='opencood/hypes_yaml/point_pillar_v2xvit_delay.yaml', help='data generation yaml file needed ')
     parser.add_argument('--freeze_heads', type=bool, default=False) #False: train the heads, True: freeze the heads
-    parser.add_argument('--model_dir',  help='Continued training path')
+    parser.add_argument('--model_dir', default=None, help='Continued training path')
     parser.add_argument('--mode', type=str, default='feature')
     parser.add_argument('--split_dataset', type=str, default='test')  #validate, test
     parser.add_argument('--forward_type', type=str, default='wo_backbone')  #wo_backbone: the feature is given by disk saved previously, classic: as the original
@@ -92,26 +92,25 @@ def show_pred_gt(predictions, batch_data, global_iteration):
         # feature_residual_image = torch.cat([feature_residual_image, torch.zeros(5 - record_len, feature_residual_image.shape[1], feature_residual_image.shape[2])], dim=0)
         pred_image = torch.cat([pred_image, torch.zeros(5 - record_len, H, W)], dim=0)
         gt_image = torch.cat([gt_image, torch.zeros(5 - record_len, gt_image.shape[1], gt_image.shape[2])], dim=0)
+        diffs = pred_image - gt_image
 
         # Constants
         num_rows = 5  # Number of rows
         H, W = feature_base_image.shape[1], feature_base_image.shape[2]  # Dimensions of each subplot (just for demo)
         # titles = ["base", "residual", "pred", "gt"]
-        titles = ["base", "pred", "gt"]
+        titles = ["base", "pred", "gt", "diffs"]
 
         # images = [feature_base_image, feature_residual_image, pred_image, gt_image]
-        images = [feature_base_image, pred_image, gt_image]
-
+        images = [feature_base_image, pred_image, gt_image, diffs]
 
         # Create figure
-        fig, axes = plt.subplots(nrows=num_rows, ncols=3, figsize=(10, 10))
+        fig, axes = plt.subplots(nrows=num_rows, ncols=4, figsize=(16, 20))
 
         # Set main title
         fig.suptitle(title_primary, fontsize=16, fontweight='bold')
 
         for row in range(num_rows):
-
-            for col in range(3):
+            for col in range(4):
                 ax = axes[row, col]
                 ax.imshow(images[col][row], cmap='viridis')
 
@@ -138,7 +137,7 @@ def main():
     hypes['mode'] = opt.mode
     hypes['split_dataset'] = opt.split_dataset
     hypes['validate_dir'] = '/equilibrium/datasets/V2X/v2xset/validate'
-    hypes['len_past'] = hypes['model']['args']['module_delay']['args']['past_k']
+    hypes['len_past'] = hypes['model']['args']['delay']['args']['past_k']
     hypes['freeze_heads'] = opt.freeze_heads
     info = opt.info
 
@@ -179,7 +178,7 @@ def main():
 
     print('---------------Creating Model------------------')
     
-    model = build_delay_module(hypes["model"]["args"]["module_delay"])
+    model = build_delay_module(hypes["model"]["args"]["delay"])
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -189,7 +188,7 @@ def main():
     model_without_ddp = model
 
     # define the loss
-    hypes['loss']['core_method'] = 'temporal_consistency_loss' #'feature_map_prediction_loss' 
+    hypes['loss']['core_method'] = 'feature_map_prediction_loss' 
     criterion = train_utils.create_loss(hypes)
 
     # optimizer setup
@@ -261,6 +260,8 @@ def main():
                 # as well
                 feature_pred, intermediate_preds = model(total_feature)
 
+                #print('feature_pred shape: ', feature_pred.shape)
+                #print('intermediate_preds shape: ', intermediate_preds.shape)
                 final_loss = criterion(feature_pred, intermediate_preds, data_dict)
             
                 #set in wandb
@@ -274,7 +275,7 @@ def main():
 
                 #show in wandb the 2d feature maps: current -> pred - gt
                 if global_iteration % 400 == 0:
-                    show_pred_gt(intermediate_preds, batch_data, global_iteration)
+                    show_pred_gt(intermediate_preds.detach(), batch_data, global_iteration)
 
                 criterion.logging(epoch, i, len(train_loader), pbar=pbar2)
                 pbar2.update(1)

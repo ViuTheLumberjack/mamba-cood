@@ -158,7 +158,7 @@ def create_loss(hypes):
     loss_func_name = hypes['loss']['core_method']
     loss_func_config = hypes['loss']['args']
     loss_func_config['freeze_heads'] = hypes['freeze_heads']
-    loss_func_config['module_delay'] = hypes['model']['args']['module_delay']
+    loss_func_config['module_delay'] = hypes['model']['args']['delay']['args']
 
     loss_filename = "opencood.loss." + loss_func_name
     loss_lib = importlib.import_module(loss_filename)

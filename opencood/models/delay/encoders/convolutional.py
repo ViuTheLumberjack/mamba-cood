@@ -52,9 +52,9 @@ class Decoder(torch.nn.Module):
         x = einops.rearrange(x, 'b t c h w -> (b t) c h w')
         
         for layer in self.arch:
-            x = layer(x)
             hs = hidden_states.pop() if hidden_states else torch.zeros_like(x)
             x = x + hs
+            x = layer(x)
 
         x = einops.rearrange(x, '(b t) c h w -> b t c h w', b=B)
         return x
