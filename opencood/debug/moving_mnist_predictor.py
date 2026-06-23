@@ -717,7 +717,7 @@ if __name__ == '__main__':
                 def __init__(self, ssim_weight=0.5):
                     super(L1SSIMLoss, self).__init__()
                     self.l1_loss = torch.nn.SmoothL1Loss(beta=0.5)
-                    self.ssim_loss = SSIM(data_range=255.0, size_average=True, win_size=11, win_sigma=1.5, channel=1, spatial_dims=2)
+                    self.ssim_loss = SSIM(data_range=1.0, size_average=True, win_size=11, win_sigma=1.5, channel=1, spatial_dims=2)
                     self.ssim_weight = ssim_weight
 
                 def forward(self, pred, gt):
@@ -743,7 +743,7 @@ if __name__ == '__main__':
 
                 def forward(self, pred, gt):
                     diff = pred - gt
-                    loss = torch.mean(torch.pow(diff * diff + self.eps * self.eps, self.beta))
+                    loss = torch.mean(torch.pow(diff * diff + self.eps, self.beta))
                     return loss
                 
             criterion = CharbonnierLoss(beta=beta)

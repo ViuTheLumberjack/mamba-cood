@@ -49,31 +49,31 @@ class BiMambaBlock(nn.Module):
         return x + self.dropout(fwd_out + bwd_out)
 
 class Conv2DBlock(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1):
+    def __init__(self, in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=torch.nn.ReLU):
         super().__init__()
         self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
         self.bn = torch.nn.BatchNorm2d(out_channels)
-        self.relu = torch.nn.ReLU()
+        self.act = activation()
 
     def forward(self, x):
         # x: [B, C, T, H, W]
         x = self.conv(x)
         x = self.bn(x)
-        x = self.relu(x)
+        x = self.act(x)
         return x
 
 class Conv2DTransposeBlock(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1):
+    def __init__(self, in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=torch.nn.ReLU):
         super().__init__()
         self.conv = torch.nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding, output_padding=padding)
         self.bn = torch.nn.BatchNorm2d(out_channels)
-        self.relu = torch.nn.ReLU()
+        self.act = activation()
 
     def forward(self, x):
         # x: [B, C, T, H, W]
         x = self.conv(x)
         x = self.bn(x)
-        x = self.relu(x)
+        x = self.act(x)
         return x
 
 class DWConv(torch.nn.Module):

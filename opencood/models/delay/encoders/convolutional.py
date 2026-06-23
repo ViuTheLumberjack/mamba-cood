@@ -17,7 +17,8 @@ class Encoder(torch.nn.Module):
         for i in range(self.layers):
             in_channels = self.input_channels if i == 0 else self.hidden_dim #// (2 ** (i - 1)) 
             out_channels = self.hidden_dim #self.hidden_dim // (2 ** i) 
-            self.arch.append(Conv2DBlock(in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1))  
+            act = torch.nn.LeakyReLU
+            self.arch.append(Conv2DBlock(in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=act))  
 
     def forward(self, x):
         # Implement the forward pass for the encoder
@@ -44,7 +45,8 @@ class Decoder(torch.nn.Module):
         for i in range(self.layers):
             in_channels = self.hidden_dim #in = self.hidden_dim // (2 ** (self.layers - i - 1)) 
             out_channels = self.out_channels if i == (self.layers - 1) else self.hidden_dim #// (2 ** (self.layers - i - 2)) 
-            self.arch.append(Conv2DTransposeBlock(in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1))     
+            act = torch.nn.ReLU if i < (self.layers - 1) else torch.nn.Identity
+            self.arch.append(Conv2DTransposeBlock(in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=act))     
 
     def forward(self, x, hidden_states=None):
         # Implement the forward pass for the decoder

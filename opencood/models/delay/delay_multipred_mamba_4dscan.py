@@ -154,7 +154,7 @@ class MambaMultiPredictor4D(nn.Module):
         )
 
         # Prediction token (alternative to using last frame patches)
-        self.pred_token = nn.Parameter(torch.randn(1, 4, self.num_future_preds*self.num_patches, self.hidden_dim))
+        self.pred_token = nn.Parameter(torch.randn(1, 4, self.num_future_preds*self.num_patches, self.hidden_dim) * 0.02)
 
         # Mamba2 backbone with residual connections and normalization
         block_cls = BiMambaBlock if self.use_bidirectional else MambaBlock
