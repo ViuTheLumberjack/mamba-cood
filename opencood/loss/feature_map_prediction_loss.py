@@ -418,7 +418,7 @@ class FeatureMapPredictionLoss(nn.Module):
         self.ssim_loss = SSIM(data_range=1.0, size_average=True, win_size=11, win_sigma=1.5, channel=output_channels, spatial_dims=2)
         self.loss_dict = {}
 
-    def delay_loss(self, output, target):
+    def delay_loss(self, output, target, weight=None):
         """
         Parameters
         ----------
@@ -432,12 +432,17 @@ class FeatureMapPredictionLoss(nn.Module):
         def charbonnier_loss(x, epsilon=1e-6):
             return torch.sqrt(x * x + epsilon)
         
-        #diff = output - target
-        #loss = charbonnier_loss(diff, self.delay_beta)
-        h_loss = F.huber_loss(output, target, reduction='none', delta=self.delay_beta)
-        s_loss = 1 - self.ssim_loss(output, target)
+        diff = output - target
+        delay_loss = charbonnier_loss(diff, self.delay_beta)
 
-        return (1 - self.delay_coeff) * h_loss + self.delay_coeff * s_loss.mean() 
+        if weight is not None:
+            delay_loss = delay_loss * weight
+        
+        return delay_loss
+        #h_loss = F.huber_loss(output, target, reduction='none', delta=self.delay_beta)
+        #s_loss = 1 - self.ssim_loss(output, target)
+
+        #return (1 - self.delay_coeff) * h_loss + self.delay_coeff * s_loss.mean() 
 
     def forward(self, feature_pred, predictions, target_dict):
         """
@@ -472,7 +477,10 @@ class FeatureMapPredictionLoss(nn.Module):
         pred = einops.rearrange(pred, 't b ... -> (t b) ...')
         gt = einops.rearrange(gt, 't b ... -> (t b) ...')
 
-        delay_loss = self.delay_loss(pred, gt)
+        fg_weight = (gt.abs().sum(1, keepdim=True) > 0.1).float()  # foreground mask
+        fg_weight = fg_weight + 0.1  # minimum weight for background
+
+        delay_loss = self.delay_loss(pred, gt, weight=fg_weight)
         delay_loss = einops.rearrange(delay_loss, '(t b) ... -> t b ...', b=B)
 
         ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(0).repeat(delay_loss.shape[0], 1, delay_loss.shape[2], delay_loss.shape[3], delay_loss.shape[4]).cuda()

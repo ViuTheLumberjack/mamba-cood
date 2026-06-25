@@ -57,14 +57,18 @@ class MambaMultiPredictor(nn.Module):
     ):
         super().__init__()
 
+        self.image_mode = args.get('image_mode', True)
+        if self.image_mode:
+            self.input_channels = args.get('input_channels', 8)
+            self.height = args.get('height', 48)
+            self.width = args.get('width', 176)
+            self.patch_size = args.get('patch_size', 8)
 
-        self.input_channels = args.get('input_channels', 8)
-        self.height = args.get('height', 48)
-        self.width = args.get('width', 176)
-        self.patch_size = args.get('patch_size', 8)
-
-        self.input_dim = self.input_channels * self.patch_size * self.patch_size
-        self.num_patches = (self.height // self.patch_size) * (self.width // self.patch_size)
+            self.input_dim = self.input_channels * self.patch_size * self.patch_size
+            self.num_patches = (self.height // self.patch_size) * (self.width // self.patch_size)
+        else:
+            self.input_dim = args.get('input_channels', 128)
+            self.num_patches = 1
 
         self.hidden_dim = args.get('hidden_dim', 512)
         self.num_layers = args.get('num_layers', 2)
@@ -74,8 +78,6 @@ class MambaMultiPredictor(nn.Module):
         self.use_bidirectional = args.get('use_bidirectional', False)
         self.dropout_rate = args.get('dropout', 0.0)
         self.residual_connection = args.get('residual', True) 
-        self.factored_embeddings = args.get('factored_embeddings', False)
-        self.factored_temporal_encoding = args.get('factored_temporal_encoding', False)
 
         self.prediction_horizon = args.get('future_delay', 0)
         self.prediction_horizon_list = args.get('future_delay_list', [0])
@@ -85,29 +87,20 @@ class MambaMultiPredictor(nn.Module):
         self.past_k = args.get('past_k', 4) + 1 # Number of past frames to use for prediction (if using pred token)
 
         # Patch embedding
-        self.flatten = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
-        self.embed = nn.Linear(self.input_dim, self.hidden_dim)
-        self.embed_norm = nn.RMSNorm(self.hidden_dim) if True else nn.Identity() 
-        self.embed_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
+        if self.image_mode:
+            self.flatten = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
+            self.embed = nn.Linear(self.input_dim, self.hidden_dim)
+            self.embed_norm = nn.RMSNorm(self.hidden_dim) if False else nn.Identity() 
+            self.embed_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
 
         self.pos_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
         # Learnable positional encodings
         # Spatial and Temporal encodings
-        if self.factored_embeddings:
-            self.spatial_pos = nn.Parameter(torch.randn(1, 1, self.num_patches, self.hidden_dim))
-
-            if self.factored_temporal_encoding:
-                self.temporal_past_pos = nn.Parameter(torch.randn(1, self.past_k, 1, self.hidden_dim))
-                self.temporal_future_pos = nn.Parameter(torch.randn(1, self.num_future_preds, 1, self.hidden_dim))
-            else:
-                self.temporal_pos = nn.Parameter(torch.randn(1, self.past_k + self.num_future_preds, 1, self.hidden_dim))
-        else:
-            self.spatiotemporal_pos = nn.Parameter(
-                torch.randn(1, (self.num_future_preds + self.past_k)*self.num_patches, self.hidden_dim)
-            )
+        self.spatial_pos = nn.Parameter(torch.randn(1, 1, self.num_patches, self.hidden_dim))
+        self.temporal_pos = nn.Parameter(torch.randn(1, self.past_k + self.num_future_preds, 1, self.hidden_dim))
 
         # Prediction token (alternative to using last frame patches)
-        self.pred_token = nn.Parameter(torch.randn(1, self.num_future_preds, self.num_patches, self.hidden_dim))
+        self.pred_token = nn.Parameter(torch.randn(1, self.num_future_preds*self.num_patches, self.hidden_dim))
         self.pred_horizon_bias = nn.Parameter(torch.randn(self.num_future_preds, 1, 1, self.hidden_dim) * 0.5)
 
         # Mamba2 backbone with residual connections and normalization
@@ -128,12 +121,12 @@ class MambaMultiPredictor(nn.Module):
                     nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity(),
                     nn.Linear(self.hidden_dim, self.input_dim)
                 ),
-                Rearrange('b np pd -> b pd np'),
+                Rearrange('b np pd -> b pd np') if self.image_mode else nn.Identity(),
                 nn.Fold(
                     output_size=(self.height, self.width), 
                     kernel_size=self.patch_size, 
                     stride=self.patch_size
-                )
+                ) if self.image_mode else nn.Identity()
             )
             for _ in range(len(args.get('future_delay_list', [0])))
         ])        
@@ -154,28 +147,13 @@ class MambaMultiPredictor(nn.Module):
         )
         return patches
 
-    def add_spatiotemporal_encoding(self, patches):
+    def add_positional_encoding(self, patches):
         """Add spatiotemporal positional encoding"""
-        B, TNP, HD = patches.shape
-        patches = patches + self.spatiotemporal_pos[:, :TNP, :]
-        patches = self.pos_dropout(patches)
-        return patches
-
-    def add_spatial_and_temporal_encoding(self, patches):
-        """Add spatial and temporal positional encodings"""
         B, T, NP, HD = patches.shape
         #patches = patches + self.spatiotemporal_pos[:, :TNP, :]
-        patches = patches + self.spatial_pos.expand(B, T, -1, -1) 
-        patches = patches + self.temporal_pos.expand(B, -1, NP, -1)
+        
         patches = self.pos_dropout(patches)
         return patches
-    
-    def add_factored_temporal_encoding(self, patches, pred_tokens):
-        """Add factored temporal positional encodings"""
-        B, T, NP, HD = patches.shape
-        patches = patches + self.temporal_past_pos.expand(B, -1, NP, -1) + self.spatial_pos.expand(B, T, -1, -1)
-        pred_tokens = pred_tokens + self.temporal_future_pos.expand(B, -1, NP, -1) + self.spatial_pos.expand(B, self.num_future_preds, -1, -1)
-        return patches, pred_tokens
 
     def forward(self, x):
         """
@@ -188,26 +166,19 @@ class MambaMultiPredictor(nn.Module):
         #print(f"Input shape: {x.shape}")
 
         # Patchify and add positional encoding
-        B, T, C, H, W = x.shape
-        patches = self.patchify(x)  # [B, T, num_patches, hidden_dim]
-    
-        # Add prediction token at the end
-        num_pred_tokens = self.num_future_preds * self.num_patches
-        pred_tokens = self.pred_token.expand(B, -1, -1, -1)
-
-        if self.factored_embeddings and self.factored_temporal_encoding:
-            patches, pred_tokens = self.add_factored_temporal_encoding(patches, pred_tokens)
-            seq = torch.cat([patches, pred_tokens], dim=1)
+        if self.image_mode:
+            B, T, C, H, W = x.shape
+            patches = self.patchify(x)  # [B, T, num_patches, hidden_dim]
             seq = einops.rearrange(patches, 'b t np hd -> b (t np) hd')
         else:
-            seq = torch.cat([patches, pred_tokens], dim=1)
-            if self.factored_embeddings:
-                seq = self.add_spatial_and_temporal_encoding(seq)
-                seq = einops.rearrange(patches, 'b t np hd -> b (t np) hd')
-            else:  
-                seq = einops.rearrange(patches, 'b t np hd -> b (t np) hd')
-                seq = self.add_spatiotemporal_encoding(seq)
-
+            B, T, HD = x.shape
+            seq = x
+        
+        # Add prediction token at the end
+        num_pred_tokens = self.num_future_preds * self.num_patches
+        pred_tokens = self.pred_token.expand(B, -1, -1)
+        seq = torch.cat([seq, pred_tokens], dim=1)
+        seq = self.add_positional_encoding(seq)
         
         # Process through Mamba2 blocks
         for block in self.blocks:
@@ -217,10 +188,13 @@ class MambaMultiPredictor(nn.Module):
         
         # Extract prediction tokens output
         pred_seq = seq[:, -num_pred_tokens:]  # [B, num_future_preds * num_patches, hidden_dim]
-        pred_seq = einops.rearrange(
-            pred_seq, 'b (f np) hd -> f b np hd', 
-            f=self.num_future_preds, np=self.num_patches
-        )
+        if self.image_mode:
+            pred_seq = einops.rearrange(
+                pred_seq, 'b (f np) hd -> f b np hd', 
+                f=self.num_future_preds, np=self.num_patches
+            )
+        else: 
+            pred_seq = einops.rearrange(pred_seq, 'b f hd -> f b hd')
         
         # Add positional bias for prediction horizon
         pred_seq = pred_seq + self.pred_horizon_bias.expand(-1, B, self.num_patches, -1)  # [num_future_preds, B, num_patches, hidden_dim]

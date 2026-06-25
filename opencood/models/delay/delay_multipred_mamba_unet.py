@@ -77,16 +77,17 @@ class MambaUNet(nn.Module):
             x: [B, T, C, H, W] input frames
         
         Returns:
-            [B, T_preds, C, H, W] predicted next frame
+            [T, B, C, H, W] predicted next frame
         """
         B, T, C, H, W = x.shape
 
         # Patchify and add positional encoding
-        feat_enc, _ = self.encoder(x)
+        feat_enc, hs = self.encoder(x)
         
         _, predictions = self.predictor(feat_enc)
 
-        preds = self.decoder(predictions, None)
+        preds = self.decoder(predictions, hs)
+        #preds = preds + x[:, -1].unsqueeze(0)  # Add the last input frame to the predictions
         
         return preds[self.prediction_horizon_idx], preds
 

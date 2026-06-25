@@ -92,7 +92,7 @@ def show_pred_gt(predictions, batch_data, global_iteration):
         # feature_residual_image = torch.cat([feature_residual_image, torch.zeros(5 - record_len, feature_residual_image.shape[1], feature_residual_image.shape[2])], dim=0)
         pred_image = torch.cat([pred_image, torch.zeros(5 - record_len, H, W)], dim=0)
         gt_image = torch.cat([gt_image, torch.zeros(5 - record_len, gt_image.shape[1], gt_image.shape[2])], dim=0)
-        diffs = pred_image - gt_image
+        diffs = torch.abs(pred_image - gt_image)
 
         # Constants
         num_rows = 5  # Number of rows
@@ -136,7 +136,9 @@ def main():
     hypes = yaml_utils.load_yaml(opt.hypes_yaml, opt)
     hypes['mode'] = opt.mode
     hypes['split_dataset'] = opt.split_dataset
-    hypes['validate_dir'] = '/equilibrium/datasets/V2X/v2xset/validate'
+    root = os.environ.get('ROOT_DIR', '/equilibrium/datasets/V2X/v2xset')
+    hypes['root_dir'] = os.path.join(root, 'train')
+    hypes['validate_dir'] = os.path.join(root, 'validate')
     hypes['len_past'] = hypes['model']['args']['delay']['args']['past_k']
     hypes['freeze_heads'] = opt.freeze_heads
     info = opt.info
@@ -202,8 +204,7 @@ def main():
     wandb.init(project='opencood_debug', notes="", name=info_name, save_code=True, mode=mode_wandb, config=hypes)
     wandb.define_metric("epoch")
     wandb.define_metric("it")
-    wandb.define_metric("train/*", step_metric="it")
-    wandb.define_metric("val/*", step_metric="epoch")
+    wandb.define_metric("loss/*", step_metric="epoch")
 
     ###########################################
 
@@ -212,8 +213,6 @@ def main():
     # used to help schedule learning rate
 
     global_iteration = 0
-    ap_70_best = 0.0
-    first_epoch = False
     #save opt parameters in local disk
     saved_path_dir = "opencood/debug/TRAININGS"
     #create folder
@@ -228,74 +227,83 @@ def main():
 
     for epoch in range(0, max(epoches, 50)):
         print('epoch %d' % epoch)
-        if first_epoch == False:
-                            
-            for param_group in optimizer.param_groups:
-                print('learning rate updated to %.7f' % param_group["lr"])
-            #wandb for lr
-            wandb.log({"lr": param_group["lr"], "epoch": epoch})
+        train_loss = []
+        for param_group in optimizer.param_groups:
+            print('learning rate updated to %.7f' % param_group["lr"])
+        #wandb for lr
+        wandb.log({"lr": param_group["lr"], "epoch": epoch})
 
-            pbar2 = tqdm.tqdm(total=len(train_loader), leave=True)
+        pbar2 = tqdm.tqdm(total=len(train_loader), leave=True)
 
-            model.train()
-            for i, batch_data in tqdm.tqdm(enumerate(train_loader)):
-                print('step training %d' % i)
-                # the model will be evaluation mode during validation
+        model.train()
+        for i, batch_data in tqdm.tqdm(enumerate(train_loader)):
+            print('step training %d' % i)
+            # the model will be evaluation mode during validation
 
-                model.zero_grad()
-                optimizer.zero_grad()
+            model.zero_grad()
+            optimizer.zero_grad()
 
-                data_dict = train_utils.to_device(batch_data, device)
+            data_dict = train_utils.to_device(batch_data, device)
 
-                feature_saved = data_dict['ego']['current_features']  
-                past_feature = data_dict['ego']['past_features']      
-                total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
+            feature_saved = data_dict['ego']['current_features']  
+            past_feature = data_dict['ego']['past_features']      
+            total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
 
 
-                # case1 : late fusion train --> only ego needed,
-                # and ego is random selected
-                # case2 : early fusion train --> all data projected to ego
-                # case3 : intermediate fusion --> ['ego']['processed_lidar']
-                # becomes a list, which containing all data from other cavs
-                # as well
-                feature_pred, intermediate_preds = model(total_feature)
+            # case1 : late fusion train --> only ego needed,
+            # and ego is random selected
+            # case2 : early fusion train --> all data projected to ego
+            # case3 : intermediate fusion --> ['ego']['processed_lidar']
+            # becomes a list, which containing all data from other cavs
+            # as well
+            feature_pred, intermediate_preds = model(total_feature)
 
-                #print('feature_pred shape: ', feature_pred.shape)
-                #print('intermediate_preds shape: ', intermediate_preds.shape)
-                final_loss = criterion(feature_pred, intermediate_preds, data_dict)
+            #print('feature_pred shape: ', feature_pred.shape)
+            #print('intermediate_preds shape: ', intermediate_preds.shape)
+            final_loss = criterion(feature_pred, intermediate_preds, data_dict)
+        
+            #set in wandb
+            train_loss.append(final_loss.item())
+
+            loss_feature = criterion.loss_dict['loss_feature']
+            mu = criterion.loss_dict['predictions_mean']
+            std = criterion.loss_dict['predictions_std']
+            wandb.log({"loss_feature": loss_feature.item(), 
+                        "it": global_iteration})
+            wandb.log({"predictions_mean": mu.item(), "it": global_iteration})
+            wandb.log({"predictions_std": std.item(), "it": global_iteration})
+
+            #show in wandb the 2d feature maps: current -> pred - gt
+            if global_iteration % 400 == 0:
+                show_pred_gt(intermediate_preds.detach(), batch_data, global_iteration)
+
+            criterion.logging(epoch, i, len(train_loader), pbar=pbar2)
+            pbar2.update(1)
+
+            final_loss.backward()
+            optimizer.step()
             
-                #set in wandb
-                loss_feature = criterion.loss_dict['loss_feature']
-                mu = criterion.loss_dict['predictions_mean']
-                std = criterion.loss_dict['predictions_std']
-                wandb.log({"loss_feature": loss_feature.item(), 
-                           "it": global_iteration})
-                wandb.log({"predictions_mean": mu.item(), "it": global_iteration})
-                wandb.log({"predictions_std": std.item(), "it": global_iteration})
+            tot_norm = 0
+            for p in model.parameters():
+                if p.grad is not None:
+                    tot_norm += p.grad.norm().item()
+            wandb.log({"grad_norm": tot_norm, "it": global_iteration})
+            
+            global_iteration += 1
 
-                #show in wandb the 2d feature maps: current -> pred - gt
-                if global_iteration % 400 == 0:
-                    show_pred_gt(intermediate_preds.detach(), batch_data, global_iteration)
-
-                criterion.logging(epoch, i, len(train_loader), pbar=pbar2)
-                pbar2.update(1)
-
-                
-                final_loss.backward()
-                optimizer.step()
-                
-                global_iteration += 1
-
-            if hypes['lr_scheduler']['core_method'] != 'cosineannealwarm':
-                scheduler.step()
-            if hypes['lr_scheduler']['core_method'] == 'cosineannealwarm':
-                scheduler.step_update(epoch * num_steps + 1)
+        if hypes['lr_scheduler']['core_method'] != 'cosineannealwarm':
+            scheduler.step()
+        if hypes['lr_scheduler']['core_method'] == 'cosineannealwarm':
+            scheduler.step_update(epoch * num_steps + 1)
 
         if epoch % hypes['train_params']['save_freq'] == 0:
             torch.save(model_without_ddp.state_dict(),
                 # os.path.join(saved_path, info, 'net_epoch%d.pth' % (epoch + 1)))
                 os.path.join(saved_path_dir, info, 'net_epoch%d.pth' % (epoch)))
             #save config files in local
+
+        train_ave_loss = statistics.mean(train_loss)
+        wandb.log({"loss/train": train_ave_loss, "epoch": epoch})
 
         if epoch % hypes['train_params']['eval_freq'] == 0:
             valid_ave_loss = []
@@ -323,8 +331,7 @@ def main():
             valid_ave_loss = statistics.mean(valid_ave_loss)
             print('At epoch %d, the validation loss is %f' % (epoch, valid_ave_loss))
             # writer.add_scalar('Validate_Loss', valid_ave_loss, epoch)
-            wandb.log({"val/loss": valid_ave_loss, "epoch": epoch})
-            first_epoch = False
+            wandb.log({"loss/val": valid_ave_loss, "epoch": epoch})
 
     print('Training Finished, checkpoints saved to %s' % saved_path_dir)
 

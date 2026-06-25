@@ -24,7 +24,7 @@ delay:
 
 yaml_parser: "load_point_pillar_params"
 train_params:
-  batch_size: &batch_size 2
+  batch_size: &batch_size 1
   epoches: 60
   eval_freq: 1
   save_freq: 1
@@ -161,31 +161,35 @@ model:
           - 300
           - 400   # ms
         past_k: 4
-        input_channels: &hidden_dim 128
+        input_channels: &hidden_dim 512
         height: 6
         width: 22
         hidden_dim: *hidden_dim
-        patch_size: 4
-        num_layers: 16
+        patch_size: 2
+        num_layers: 8
         d_state: 64
         d_conv: 4
         expand: 2
-        use_bidirectional: True
+        use_bidirectional: False
         dropout: 0.2
-        residual: True
-        image_mode: True
+        residual: False
+        factored_embeddings: True
+        factored_temporal_encoding: True
         encoder_config:
           type: conv
           input_channels: &in_channels 8
           hidden_dim: *hidden_dim
-          num_layers: 2
+          num_layers: 3
           reps: 
             - 2
             - 2
+            - 2
           channels: 
-            - 384
+            - 64
+            - 96
             - *hidden_dim
           strides: 
+            - 2
             - 2
             - 2
         decoder_config:
@@ -194,14 +198,17 @@ model:
           output_channels: *in_channels
           height: 48
           width: 176
-          num_layers: 2
+          num_layers: 3
           reps: 
             - 2
             - 2
+            - 2
           channels: 
-            - 384
             - *hidden_dim
+            - 384
+            - *in_channels
           strides: 
+            - 2
             - 2
             - 2
 loss:

@@ -178,14 +178,17 @@ model:
           type: conv
           input_channels: &in_channels 8
           hidden_dim: *hidden_dim
-          num_layers: 2
+          num_layers: 3
           reps: 
             - 2
             - 2
+            - 2
           channels: 
+            - 128
             - 384
             - *hidden_dim
           strides: 
+            - 2
             - 2
             - 2
         decoder_config:
@@ -194,14 +197,17 @@ model:
           output_channels: *in_channels
           height: 48
           width: 176
-          num_layers: 2
+          num_layers: 3
           reps: 
             - 2
             - 2
+            - 2
           channels: 
+            - 128
             - 384
             - *hidden_dim
           strides: 
+            - 2
             - 2
             - 2
 
