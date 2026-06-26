@@ -161,12 +161,12 @@ model:
           - 300
           - 400   # ms
         past_k: 4
-        input_channels: &hidden_dim 512
+        input_channels: &hidden_dim 128
         height: 6
         width: 22
         hidden_dim: *hidden_dim
         patch_size: 2
-        num_layers: 8
+        num_layers: 1
         d_state: 64
         d_conv: 4
         expand: 2

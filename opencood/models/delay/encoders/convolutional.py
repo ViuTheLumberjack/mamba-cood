@@ -46,7 +46,7 @@ class Decoder(torch.nn.Module):
         for i in range(self.layers):
             in_channels = self.hidden_dim #in = self.hidden_dim // (2 ** (self.layers - i - 1)) 
             out_channels = self.out_channels if i == (self.layers - 1) else self.hidden_dim #// (2 ** (self.layers - i - 2)) 
-            act = torch.nn.ReLU if i < (self.layers - 1) else torch.nn.Identity
+            act = torch.nn.LeakyReLU if i < (self.layers - 1) else torch.nn.ReLU
             self.arch.append(Conv2DTransposeBlock(in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=act))     
 
     def forward(self, x, hidden_states=None):

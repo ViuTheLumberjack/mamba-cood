@@ -104,7 +104,7 @@ def show_pred_gt(predictions, batch_data, global_iteration):
         images = [feature_base_image, pred_image, gt_image, diffs]
 
         # Create figure
-        fig, axes = plt.subplots(nrows=num_rows, ncols=4, figsize=(16, 20))
+        fig, axes = plt.subplots(nrows=num_rows, ncols=4, figsize=(20, 16))
 
         # Set main title
         fig.suptitle(title_primary, fontsize=16, fontweight='bold')
@@ -246,9 +246,18 @@ def main():
             data_dict = train_utils.to_device(batch_data, device)
 
             feature_saved = data_dict['ego']['current_features']  
-            past_feature = data_dict['ego']['past_features']      
+            past_feature = data_dict['ego']['past_features']
             total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
-
+            
+            ## log in wandb the percentage of zero frames in total_feature
+            zero_frames = (total_feature == 0).all(dim=(2, 3, 4)).sum().item() / (total_feature.shape[0] * total_feature.shape[1])
+            wandb.log({"input_zero_frames": zero_frames, "it": global_iteration})
+            zero_percentage = (total_feature == 0).sum().item() / total_feature.numel()
+            wandb.log({"input_zeroes": zero_percentage, "it": global_iteration}) 
+            ## also log the num of zero elements in gt 
+            gt_features = data_dict['ego']['gt_features']
+            gt_zero_percentage = (gt_features == 0).sum().item() / gt_features.numel()
+            wandb.log({"gt_zeroes": gt_zero_percentage, "it": global_iteration})
 
             # case1 : late fusion train --> only ego needed,
             # and ego is random selected
