@@ -155,7 +155,7 @@ model:
       args:
         predictor_type: simple
         future_delay: *future_delay  # ms
-        future_delay_list: 
+        future_delay_list:
           - 100
           - 200
           - 300
@@ -166,11 +166,11 @@ model:
         width: 22
         hidden_dim: *hidden_dim
         patch_size: 2
-        num_layers: 1
+        num_layers: 4
         d_state: 64
         d_conv: 4
         expand: 2
-        use_bidirectional: False
+        use_bidirectional: True
         dropout: 0.2
         residual: False
         factored_embeddings: True
@@ -180,15 +180,15 @@ model:
           input_channels: &in_channels 8
           hidden_dim: *hidden_dim
           num_layers: 3
-          reps: 
+          reps:
             - 2
             - 2
             - 2
-          channels: 
+          channels:
             - 64
             - 96
             - *hidden_dim
-          strides: 
+          strides:
             - 2
             - 2
             - 2
@@ -199,15 +199,15 @@ model:
           height: 48
           width: 176
           num_layers: 3
-          reps: 
+          reps:
             - 2
             - 2
             - 2
-          channels: 
+          channels:
             - *hidden_dim
             - 384
             - *in_channels
-          strides: 
+          strides:
             - 2
             - 2
             - 2
@@ -217,8 +217,9 @@ loss:
     cls_weight: 1.0
     reg: 2.0
     
-    delay: 0.5
-    delay_coeff: 0.8
+    delay_type: 'charbonnier' # delay loss type
+    delay_arg: 0.000001 # delay loss beta
+    delay_weight: 100.0 # lamda delay
 
 optimizer:
   core_method: Adam

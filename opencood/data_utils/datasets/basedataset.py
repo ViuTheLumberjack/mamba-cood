@@ -324,7 +324,10 @@ class BaseDataset(Dataset):
         # get all timestamp keys
         timestamp_keys = list(scenario_database.items())[0][1]
         # retrieve the correct index
-        timestamp_key = list(timestamp_keys.items())[timestamp_index][0]
+        try:
+            timestamp_key = list(timestamp_keys.items())[timestamp_index][0]
+        except IndexError:
+            exit(f'IndexError: timestamp index {timestamp_index} is out of range in {list(timestamp_keys.items())}. Please check the dataset.')
 
         return timestamp_key
 

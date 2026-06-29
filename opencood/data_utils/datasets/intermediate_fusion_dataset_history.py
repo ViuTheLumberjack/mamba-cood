@@ -68,15 +68,12 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
         scenario_folders = sorted([os.path.join(root_dir, x)
                                    for x in os.listdir(root_dir) if
                                    os.path.isdir(os.path.join(root_dir, x))])
-        # Structure: {scenario_id : {cav_1 : {timestamp1 : {yaml: path,
-        # lidar: path, cameras:list of path}}}}
-        self.scenario_database = OrderedDict()
-        self.len_record = []
+        
+        # Update the length of the records to take into account the past and intermediate predictions
+        self.len_recordz = []
 
         # loop over all scenarios
         for (i, scenario_folder) in enumerate(scenario_folders):
-            self.scenario_database.update({i: OrderedDict()})
-
             # at least 1 cav should show up
             cav_list = sorted([x for x in os.listdir(scenario_folder)
                                if os.path.isdir(
@@ -91,11 +88,6 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
 
             # loop over all CAV data
             for (j, cav_id) in enumerate(cav_list):
-                if j > self.max_cav - 1:
-                    print('too many cavs')
-                    break
-                self.scenario_database[i][cav_id] = OrderedDict()
-
                 # save all yaml files to the dictionary
                 cav_path = os.path.join(scenario_folder, cav_id)
 
@@ -105,38 +97,21 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
                             for x in os.listdir(cav_path) if
                             x.endswith('.yaml') and 'additional' not in x])
                 timestamps = self.extract_timestamps(yaml_files)
-
-                for timestamp in timestamps:
-                    self.scenario_database[i][cav_id][timestamp] = \
-                        OrderedDict()
-
-                    yaml_file = os.path.join(cav_path,
-                                             timestamp + '.yaml')
-                    lidar_file = os.path.join(cav_path,
-                                              timestamp + '.pcd')
-                    camera_files = self.load_camera_files(cav_path, timestamp)
-
-                    self.scenario_database[i][cav_id][timestamp]['yaml'] = \
-                        yaml_file
-                    self.scenario_database[i][cav_id][timestamp]['lidar'] = \
-                        lidar_file
-                    self.scenario_database[i][cav_id][timestamp]['camera0'] = \
-                        camera_files
                     
                 # Assume all cavs will have the same timestamps length. Thus
                 # we only need to calculate for the first vehicle in the
                 # scene.
                 if j == 0:  # ego 
                     # we regard the agent with the minimum id as the ego
-                    self.scenario_database[i][cav_id]['ego'] = True
                     num_ego_timestamps = len(timestamps) - self.len_past - len(self.intermediate_preds)
-                    if not self.len_record:
-                        self.len_record.append(num_ego_timestamps)
+                    if not self.len_recordz:
+                        self.len_recordz.append(num_ego_timestamps)
                     else:
-                        prev_last = self.len_record[-1]
-                        self.len_record.append(prev_last + num_ego_timestamps)
-                else:
-                    self.scenario_database[i][cav_id]['ego'] = False
+                        prev_last = self.len_recordz[-1]
+                        self.len_recordz.append(prev_last + num_ego_timestamps)
+
+    def __len__(self):
+        return self.len_recordz[-1]
 
     def __load_sequence(self, delay_key, scenario_index, cav_i, folder_path_main, seq_range) -> tuple[torch.Tensor, list] :
         feature_sequence = []
@@ -160,7 +135,7 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
         return feature_tensor, index_keys
         
     def __getitem__(self, idx):
-        base_data_dict, data_example = self.retrieve_base_data(idx, cur_ego_pose_flag=self.cur_ego_pose_flag)
+        base_data_dict, data_example = self.retrieve_base_data(idx + self.len_past + len(self.intermediate_preds), cur_ego_pose_flag=self.cur_ego_pose_flag)
         id_data = idx
 
         processed_data_dict = OrderedDict()
@@ -335,13 +310,14 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
                     # a non-ego vehicle, shall have as his gt the sequence of intermediate predictions
                     # from his delayed perspective
                     gt_seq_range = [future_delay // 100 for future_delay in self.intermediate_preds]
-                    gt_features_i, keys = self.__load_sequence(delay_key, scenario_index, cav_i, folder_path_main, gt_seq_range)
-                    # print('gt keys: ', keys)
+                    gt_features_i, gt_keys = self.__load_sequence(delay_key, scenario_index, cav_i, folder_path_main, gt_seq_range)
+                    #print('gt keys: ', gt_keys)
                     gt_features.append(gt_features_i)
 
                     past_seq_range = range(-self.len_past,0, 1)
                     if len(past_seq_range) >0:
-                        past_features_i, _ = self.__load_sequence(delay_key, scenario_index, cav_i, folder_path_main, past_seq_range) 
+                        past_features_i, past_keys = self.__load_sequence(delay_key, scenario_index, cav_i, folder_path_main, past_seq_range) 
+                        #print('past keys: ', past_keys)
                         past_features.append(past_features_i)
                     else:
                         past_features.append(torch.zeros(0, 8, 48, 176))
@@ -699,3 +675,25 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
                     pairwise_t_matrix[i, j] = t_matrix
 
         return pairwise_t_matrix
+
+
+if __name__ == '__main__':
+    import opencood.hypes_yaml.yaml_utils as yaml_utils
+    from opencood.data_utils.datasets import build_dataset
+
+    hype_name = "/equilibrium/students/svatamanelu/mamba-cood/opencood/hypes_yaml/point_pillar_v2xvit_delay_multpred_encoder.yaml"
+    hypes = yaml_utils.load_yaml(hype_name, None)
+    hypes['mode'] = 'feature'
+    hypes['split_dataset'] = 'train'
+    hypes['len_past'] = 4
+    root = os.environ.get('ROOT_DIR', '/equilibrium/datasets/V2X/v2xset')
+    hypes['root_dir'] = os.path.join(root, 'train')
+    hypes['validate_dir'] = os.path.join(root, 'validate')
+    opencood_train_dataset = build_dataset(hypes, visualize=False, train=True)
+
+    for i, data_dict in enumerate(opencood_train_dataset):
+        print(data_dict['ego']['data_example'])
+
+        past_feature = data_dict['ego']['past_features']
+        print((past_feature == 0).all(dim=(2, 3, 4)).all().item())
+        #input("Press Enter to continue...")
