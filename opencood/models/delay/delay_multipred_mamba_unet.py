@@ -87,7 +87,9 @@ class MambaUNet(nn.Module):
         _, predictions = self.predictor(feat_enc)
 
         preds = self.decoder(predictions, hs)
-        #preds = preds + x[:, -1].unsqueeze(0)  # Add the last input frame to the predictions
+        
+        # Add the last input frame to the predictions
+        preds = preds + x[:, -1].unsqueeze(0)  
         
         return preds[self.prediction_horizon_idx], preds
 

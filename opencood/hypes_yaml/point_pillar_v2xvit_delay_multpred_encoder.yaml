@@ -165,13 +165,13 @@ model:
         height: 6
         width: 22
         hidden_dim: *hidden_dim
-        patch_size: 2
+        patch_size: 1
         num_layers: 4
         d_state: 64
         d_conv: 4
         expand: 2
-        use_bidirectional: True
-        dropout: 0.2
+        use_bidirectional: False
+        dropout: 0.1
         residual: False
         factored_embeddings: True
         factored_temporal_encoding: True
@@ -180,6 +180,10 @@ model:
           input_channels: &in_channels 8
           hidden_dim: *hidden_dim
           num_layers: 3
+          activations: 
+            - LeakyReLU
+            - LeakyReLU
+            - LeakyReLU
           reps:
             - 2
             - 2
@@ -199,6 +203,10 @@ model:
           height: 48
           width: 176
           num_layers: 3
+          activations: 
+            - LeakyReLU
+            - Identity
+            - Identity
           reps:
             - 2
             - 2
@@ -219,7 +227,7 @@ loss:
     
     delay_type: 'charbonnier' # delay loss type
     delay_arg: 0.000001 # delay loss beta
-    delay_weight: 100.0 # lamda delay
+    delay_weight: 1.0 # lamda delay
 
 optimizer:
   core_method: Adam

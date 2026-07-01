@@ -181,8 +181,9 @@ loss:
     cls_weight: 1.0
     reg: 2.0
     
-    delay: 0.5
-    delay_coeff: 0.85
+    delay_type: 'charbonnier' # delay loss type
+    delay_arg: 0.000001 # delay loss beta
+    delay_weight: 100.0 # lamda delay
 
 optimizer:
   core_method: Adam

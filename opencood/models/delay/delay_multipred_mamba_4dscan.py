@@ -129,6 +129,8 @@ class MambaMultiPredictor4D(nn.Module):
         self.use_bidirectional = args.get('use_bidirectional', False)
         self.dropout_rate = args.get('dropout', 0.0)
         self.residual_connection = args.get('residual', True)
+        self.factored_embeddings = args.get('factored_embeddings', False)
+        self.factored_temporal_encoding = args.get('factored_temporal_encoding', False)
 
         self.prediction_horizon = args.get('future_delay', 0)
         self.prediction_horizon_list = args.get('future_delay_list', [0])
@@ -155,9 +157,10 @@ class MambaMultiPredictor4D(nn.Module):
 
         # Prediction token (alternative to using last frame patches)
         self.pred_token = nn.Parameter(torch.randn(1, 4, self.num_future_preds*self.num_patches, self.hidden_dim) * 0.02)
+        self.pred_horizon_bias = nn.Parameter(torch.randn(self.num_future_preds, 1, 1, self.hidden_dim) * 0.5)
 
         # Mamba2 backbone with residual connections and normalization
-        block_cls = BiMambaBlock if self.use_bidirectional else MambaBlock
+        block_cls = MambaBlock
             
         self.blocks = nn.ModuleList([nn.Sequential(*[
             block_cls(self.hidden_dim, self.d_state, self.d_conv, self.expand) 
@@ -165,22 +168,6 @@ class MambaMultiPredictor4D(nn.Module):
         ]) for _ in range(4)])  # 4 parallel scan patterns
 
         self.final_norm = nn.RMSNorm(self.hidden_dim)     
-
-    def patchify(self, x):
-        """Convert frames to patches with embeddings"""
-        B, T, C, H, W = x.shape
-        x = einops.rearrange(x, 'b t c h w -> (b t) c h w')
-        patches = self.flatten(x)  # [B*T, patch_dim, num_patches]
-        #print(f"Patch shape after flatten: {patches.shape}")
-        patches = einops.rearrange(patches, 'bt pd np -> bt np pd')
-        patches = self.embed(patches)  # [B*T, num_patches, hidden_dim]
-        #print(f"Patch shape after embedding: {patches.shape}")
-        patches = self.embed_norm(patches)
-        patches = self.embed_dropout(patches)
-        patches = einops.rearrange(
-            patches, '(b t) np hd -> b t np hd', b=B, t=T
-        )
-        return patches
 
     def add_positional_encoding(self, patches):
         """Add spatiotemporal positional encoding"""
@@ -236,6 +223,8 @@ class MambaMultiPredictor4D(nn.Module):
         # Extract prediction tokens output
         p = p[:, :, -num_pred_tokens:]  # [B, num_future_preds * num_patches, hidden_dim]
         
+        p = self.final_norm(p)
+
         p = einops.rearrange(
             p, 's b (f np) hd -> (f b) s hd np',
             f=self.num_future_preds, np=self.num_patches

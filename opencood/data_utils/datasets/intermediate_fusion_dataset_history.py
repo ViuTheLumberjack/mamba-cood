@@ -297,7 +297,10 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
                     current_features_i = torch.zeros(8, 48, 176)
                 current_features.append(current_features_i)
 
-                if ego_i == True:
+                # all vehicles, shall have as their gt the sequence of intermediate predictions
+                # from their delayed perspective when training to maximize the supervision.
+                # During inference, the ego vehicle wont predict anything.
+                if not self.train and ego_i == True:
                     # the gt is the sequnce of intermediate predictions from ego's perspective
                     
                     #gt_seq_range = range(-len(self.intermediate_preds) + 1,1,1)
@@ -307,8 +310,6 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
                     # for ego vehicle, past features don't matter, just fill with zeros
                     past_features.append(torch.zeros(self.len_past, 8, 48, 176))
                 else:
-                    # a non-ego vehicle, shall have as his gt the sequence of intermediate predictions
-                    # from his delayed perspective
                     gt_seq_range = [future_delay // 100 for future_delay in self.intermediate_preds]
                     gt_features_i, gt_keys = self.__load_sequence(delay_key, scenario_index, cav_i, folder_path_main, gt_seq_range)
                     #print('gt keys: ', gt_keys)

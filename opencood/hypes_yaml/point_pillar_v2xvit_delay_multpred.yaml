@@ -164,16 +164,18 @@ model:
         input_channels: 8
         height: 48
         width: 176
-        hidden_dim: 768
-        patch_size: 4
-        num_layers: 8
-        d_state: 64
+        hidden_dim: 512
+        patch_size: 8
+        num_layers: 4
+        d_state: 128
         d_conv: 4
-        expand: 2
-        use_bidirectional: True
-        dropout: 0.2
+        expand: 4
+        use_bidirectional: False
+        dropout: 0.1
         residual: True
-        image_mode: True
+        factored_embeddings: False
+        factored_temporal_encoding: False
+        sincos: True
 
 loss:
   core_method: point_pillar_loss
@@ -181,12 +183,13 @@ loss:
     cls_weight: 1.0
     reg: 2.0
 
-    delay: 0.5
-    delay_coeff: 0.85
+    delay_type: 'charbonnier' # delay loss type
+    delay_arg: 0.000001 # delay loss beta
+    delay_weight: 1.0 # lamda delay
 
 optimizer:
   core_method: Adam
-  lr: 0.01
+  lr: 0.001
   args:
     eps: 1e-10
     weight_decay: 1e-4

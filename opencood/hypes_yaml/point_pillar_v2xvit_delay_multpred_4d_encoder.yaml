@@ -172,8 +172,10 @@ model:
         expand: 2
         use_bidirectional: False
         dropout: 0.2
-        residual: True
+        residual: False
         image_mode: True
+        factored_embeddings: True
+        factored_temporal_encoding: True
         encoder_config:
           type: conv
           input_channels: &in_channels 8
@@ -219,7 +221,7 @@ loss:
     
     delay_type: 'charbonnier' # delay loss type
     delay_arg: 0.001 # delay loss beta
-    delay_weight: 1.0 # lamda delay
+    delay_weight: 10.0 # lamda delay
     
 optimizer:
   core_method: Adam

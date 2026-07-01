@@ -162,10 +162,10 @@ class FeatureMapPredictionLoss(nn.Module):
         ego_list = target_dict_copy['ego']['ego_list']
         
         loss = 0
-        for i in range(len(record_len)):
-            ego_flag = torch.Tensor(ego_list[i])
-            # from 0 to 1, and from 1 to 0
-            ego_flag = torch.where(ego_flag == 0, 1, 0)
+        #for i in range(len(record_len)):
+        #    ego_flag = torch.Tensor(ego_list[i])
+        #    # from 0 to 1, and from 1 to 0
+        #    ego_flag = torch.where(ego_flag == 0, 1, 0)
         
         #print(ego_flag)
 
@@ -173,26 +173,35 @@ class FeatureMapPredictionLoss(nn.Module):
         pred = predictions #[:, i]
         gt = feature_gt #[:, i]
 
+        pred_diff = predictions[1:] - predictions[:-1]      # [T-1, B, C, H, W]
+        gt_diff   = gt[1:] - gt[:-1]                         # [T-1, B, C, H, W]
+
         #print(pred.shape, gt.shape)
         pred = einops.rearrange(pred, 't b ... -> (t b) ...')
         gt = einops.rearrange(gt, 't b ... -> (t b) ...')
 
-        fg_weight = (gt.abs().sum(1, keepdim=True) > 0.1).float()  # foreground mask
+        fg_weight = (gt.abs().sum(1, keepdim=True) != 0).float()  # foreground mask
         fg_weight = fg_weight + 0.1  # minimum weight for background
 
         delay_loss = self.delay_loss(pred, gt, weight=fg_weight)
         delay_loss = einops.rearrange(delay_loss, '(t b) ... -> t b ...', b=B)
 
-        ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(0).repeat(delay_loss.shape[0], 1, delay_loss.shape[2], delay_loss.shape[3], delay_loss.shape[4]).cuda()
+        # Foreground mask: active in any timestep
+        fg_temp = (gt_diff.abs().sum(1, keepdim=True) != 0).float()
+        fg_temp = fg_temp + 0.1
+
+        temp_loss = self.delay_loss(pred_diff, gt_diff, weight=fg_temp)
+
+        #ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(0).repeat(delay_loss.shape[0], 1, delay_loss.shape[2], delay_loss.shape[3], delay_loss.shape[4]).cuda()
         #print(ego_flag.shape, delay_loss.shape)
 
-        delay_loss = delay_loss * ego_flag
-        delay_loss = delay_loss.sum() / (ego_flag.sum() + 1e-6)
+        #delay_loss = delay_loss * ego_flag
+        #delay_loss = delay_loss.sum() / (ego_flag.sum() + 1e-6)
 
-        loss += delay_loss
+        loss += delay_loss.mean()
+        loss += temp_loss.mean()
 
         loss = loss / len(record_len)
-        loss *= self.delay_weight
         
         self.loss_dict.update({
                                'loss_feature': loss, 

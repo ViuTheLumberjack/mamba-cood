@@ -11,18 +11,24 @@ class Encoder(torch.nn.Module):
         self.input_channels = args.get('input_channels', 1)
         self.hidden_dim = args.get('hidden_dim', 256)
         self.layers = args.get('num_layers', 3)
+        self.acts = args.get('activations', torch.nn.LeakyReLU)
+        print(f"Encoder activations: {self.acts}, type {type(self.acts)}")
+        if not isinstance(self.acts, list):
+            self.acts = [getattr(nn, self.acts)] * self.layers 
+        else:
+            self.acts = [getattr(nn, act) if isinstance(act, str) else act for act in self.acts]
+        assert len(self.acts) == self.layers, "Length of activations list must match number of layers"
 
         self.arch = torch.nn.ModuleList()
 
         for i in range(self.layers):
             in_channels = self.input_channels if i == 0 else self.hidden_dim #// (2 ** (i - 1)) 
             out_channels = self.hidden_dim #self.hidden_dim // (2 ** i) 
-            act = torch.nn.LeakyReLU
-            self.arch.append(Conv2DBlock(in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=act))  
+            self.arch.append(Conv2DBlock(in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=self.acts[i]))  
 
     def forward(self, x):
         B, T, C, H, W = x.shape
-        hs = [x[:, -1].clone()]
+        hs = []
         
         x = einops.rearrange(x, 'b t c h w -> (b t) c h w')
         for layer in self.arch:
@@ -40,14 +46,19 @@ class Decoder(torch.nn.Module):
         self.out_channels = args.get('output_channels', 1)
         self.hidden_dim = args.get('input_channels', 256)
         self.layers = args.get('num_layers', 3)
+        self.acts = args.get('activations', torch.nn.LeakyReLU)
+        if not isinstance(self.acts, list):
+            self.acts = [getattr(nn, self.acts)] * self.layers 
+        else:
+            self.acts = [getattr(nn, act) if isinstance(act, str) else act for act in self.acts]
+        assert len(self.acts) == self.layers, "Length of activations list must match number of layers"
 
         self.arch = torch.nn.ModuleList()
 
         for i in range(self.layers):
             in_channels = self.hidden_dim #in = self.hidden_dim // (2 ** (self.layers - i - 1)) 
             out_channels = self.out_channels if i == (self.layers - 1) else self.hidden_dim #// (2 ** (self.layers - i - 2)) 
-            act = torch.nn.LeakyReLU if i < (self.layers - 1) else torch.nn.ReLU
-            self.arch.append(Conv2DTransposeBlock(in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=act))     
+            self.arch.append(Conv2DTransposeBlock(in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=self.acts[i]))     
 
     def forward(self, x, hidden_states=None):
         T, B, C, H, W = x.shape  # T = num_preds (4)
@@ -62,12 +73,6 @@ class Decoder(torch.nn.Module):
             
             x = x + hs
             x = layer(x)
-        
-        if hidden_states:
-            hs = hidden_states.pop()  # [B, C, H, W] — current frame only
-            hs = einops.repeat(hs, 'b c h w -> t b c h w', t=T)
-            hs = einops.rearrange(hs, 't b c h w -> (t b) c h w')  # [B*T, C, H, W]
-            x = x + hs
 
         x = einops.rearrange(x, '(t b) c h w -> t b c h w', b=B)
         return x

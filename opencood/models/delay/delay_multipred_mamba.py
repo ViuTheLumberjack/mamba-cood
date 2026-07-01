@@ -2,6 +2,7 @@ import torch
 import einops
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from mamba_ssm import Mamba, Mamba2 # TODO: add mamba 3 for RoPE
 from einops.layers.torch import Rearrange 
 
@@ -9,7 +10,7 @@ class MambaBlock(nn.Module):
     """Mamba2 block with pre-norm and residual connection"""
     def __init__(self, hidden_dim, d_state=64, d_conv=8, expand=2, dropout=0.1, norm=True):
         super().__init__()
-        self.norm = nn.LayerNorm(hidden_dim) if norm else nn.Identity()
+        self.norm = nn.RMSNorm(hidden_dim) if norm else nn.Identity()
         self.mamba = Mamba2(
             d_model=hidden_dim,
             d_state=d_state,
@@ -27,7 +28,7 @@ class BiMambaBlock(nn.Module):
     """Bidirectional Mamba2 block with pre-norm and residual connection"""
     def __init__(self, hidden_dim, d_state=64, d_conv=8, expand=2, dropout=0.1, norm=True):
         super().__init__()
-        self.norm = nn.LayerNorm(hidden_dim) if norm else nn.Identity()
+        self.norm = nn.RMSNorm(hidden_dim) if norm else nn.Identity()
         self.mamba_fwd = Mamba2(
             d_model=hidden_dim,
             d_state=d_state,
@@ -76,6 +77,7 @@ class MambaMultiPredictor(nn.Module):
         self.residual_connection = args.get('residual', True) 
         self.factored_embeddings = args.get('factored_embeddings', False)
         self.factored_temporal_encoding = args.get('factored_temporal_encoding', False)
+        self.sincos = args.get('sincos', True)
 
         self.prediction_horizon = args.get('future_delay', 0)
         self.prediction_horizon_list = args.get('future_delay_list', [0])
@@ -90,25 +92,48 @@ class MambaMultiPredictor(nn.Module):
         self.embed_norm = nn.RMSNorm(self.hidden_dim) if True else nn.Identity() 
         self.embed_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
 
-        self.pos_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
         # Learnable positional encodings
         # Spatial and Temporal encodings
-        if self.factored_embeddings:
-            self.spatial_pos = nn.Parameter(torch.randn(1, 1, self.num_patches, self.hidden_dim))
+        if self.sincos:
+            if self.factored_embeddings:
+                self.spatial_pos = nn.Parameter(torch.randn(1, 1, self.num_patches, self.hidden_dim))
 
-            if self.factored_temporal_encoding:
-                self.temporal_past_pos = nn.Parameter(torch.randn(1, self.past_k, 1, self.hidden_dim))
-                self.temporal_future_pos = nn.Parameter(torch.randn(1, self.num_future_preds, 1, self.hidden_dim))
+                total_t = self.past_k + self.num_future_preds
+                sincos = self._create_sincos_encoding(total_t, self.hidden_dim)
+
+                if self.factored_temporal_encoding:
+                    self.register_buffer('temporal_past_pos',
+                        sincos[:self.past_k].view(1, self.past_k, 1, self.hidden_dim))
+                    self.register_buffer('temporal_future_pos',
+                        sincos[self.past_k:].view(1, self.num_future_preds, 1, self.hidden_dim))
+                else:
+                    self.register_buffer('temporal_pos',
+                        sincos.view(1, total_t, 1, self.hidden_dim))
             else:
-                self.temporal_pos = nn.Parameter(torch.randn(1, self.past_k + self.num_future_preds, 1, self.hidden_dim))
+                # Non-factored: still combine spatial (learned) + temporal (sincos)
+                # Keep as nn.Parameter for spatial, compute temporal on-the-fly
+                self.spatial_embed = nn.Parameter(
+                    torch.randn(1, self.num_patches, self.hidden_dim) * 0.02)
+                total_t = self.past_k + self.num_future_preds
+                self.register_buffer('sincos_encoding',
+                    self._create_sincos_encoding(total_t, self.hidden_dim))
         else:
-            self.spatiotemporal_pos = nn.Parameter(
-                torch.randn(1, (self.num_future_preds + self.past_k)*self.num_patches, self.hidden_dim)
-            )
+            if self.factored_embeddings:
+                self.spatial_pos = nn.Parameter(torch.randn(1, 1, self.num_patches, self.hidden_dim))
+
+                if self.factored_temporal_encoding:
+                    self.temporal_past_pos = nn.Parameter(torch.randn(1, self.past_k, 1, self.hidden_dim))
+                    self.temporal_future_pos = nn.Parameter(torch.randn(1, self.num_future_preds, 1, self.hidden_dim))
+                else:
+                    self.temporal_pos = nn.Parameter(torch.randn(1, self.past_k + self.num_future_preds, 1, self.hidden_dim))
+            else:
+                self.spatiotemporal_pos = nn.Parameter(
+                    torch.randn(1, (self.num_future_preds + self.past_k)*self.num_patches, self.hidden_dim)
+                )
 
         # Prediction token (alternative to using last frame patches)
         self.pred_token = nn.Parameter(torch.randn(1, self.num_future_preds, self.num_patches, self.hidden_dim))
-        self.pred_horizon_bias = nn.Parameter(torch.randn(self.num_future_preds, 1, 1, self.hidden_dim) * 0.5)
+        self.pred_horizon_bias = nn.Parameter(torch.randn(self.num_future_preds, 1, 1, self.hidden_dim))
 
         # Mamba2 backbone with residual connections and normalization
         block_cls = BiMambaBlock if self.use_bidirectional else MambaBlock
@@ -119,12 +144,13 @@ class MambaMultiPredictor(nn.Module):
         ])
 
         self.final_norm = nn.RMSNorm(self.hidden_dim)
+        self.residual_gate = nn.Parameter(torch.tensor(0.0)) 
 
         self.reconstruction_heads = nn.ModuleList([
             nn.Sequential(
                 nn.Sequential(
                     nn.Linear(self.hidden_dim, self.hidden_dim),
-                    nn.GELU(),
+                    nn.LeakyReLU(),
                     nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity(),
                     nn.Linear(self.hidden_dim, self.input_dim)
                 ),
@@ -154,11 +180,30 @@ class MambaMultiPredictor(nn.Module):
         )
         return patches
 
+    @staticmethod
+    def _create_sincos_encoding(max_len, dim):
+        pe = torch.zeros(max_len, dim)
+        pos = torch.arange(max_len, dtype=torch.float).unsqueeze(1)
+        div = torch.exp(torch.arange(0, dim, 2, dtype=torch.float) * (-math.log(10000.0) / dim))
+        pe[:, 0::2] = torch.sin(pos * div)
+        pe[:, 1::2] = torch.cos(pos * div)
+        return pe  # [max_len, dim]
+
+    def add_sincos_spatiotemporal_encoding(self, seq):
+        B, T, NP, HD = seq.shape
+        # Add spatial + temporal (sincos) separately
+        seq = seq + self.spatial_pos.expand(B, 1, -1, -1)  # [B, 1, num_patches, hidden_dim]
+        # Add sincos temporal per-patch
+        t_pos = self.sincos_encoding.expand(B, -1, NP, -1)  # [B, T, 1, hidden_dim]
+        seq = seq + t_pos
+        
+        return seq
+
     def add_spatiotemporal_encoding(self, patches):
         """Add spatiotemporal positional encoding"""
         B, TNP, HD = patches.shape
         patches = patches + self.spatiotemporal_pos[:, :TNP, :]
-        patches = self.pos_dropout(patches)
+
         return patches
 
     def add_spatial_and_temporal_encoding(self, patches):
@@ -167,7 +212,7 @@ class MambaMultiPredictor(nn.Module):
         #patches = patches + self.spatiotemporal_pos[:, :TNP, :]
         patches = patches + self.spatial_pos.expand(B, T, -1, -1) 
         patches = patches + self.temporal_pos.expand(B, -1, NP, -1)
-        patches = self.pos_dropout(patches)
+
         return patches
     
     def add_factored_temporal_encoding(self, patches, pred_tokens):
@@ -195,19 +240,22 @@ class MambaMultiPredictor(nn.Module):
         num_pred_tokens = self.num_future_preds * self.num_patches
         pred_tokens = self.pred_token.expand(B, -1, -1, -1)
 
+
         if self.factored_embeddings and self.factored_temporal_encoding:
             patches, pred_tokens = self.add_factored_temporal_encoding(patches, pred_tokens)
             seq = torch.cat([patches, pred_tokens], dim=1)
-            seq = einops.rearrange(patches, 'b t np hd -> b (t np) hd')
+            seq = einops.rearrange(seq, 'b t np hd -> b (t np) hd')
         else:
             seq = torch.cat([patches, pred_tokens], dim=1)
             if self.factored_embeddings:
                 seq = self.add_spatial_and_temporal_encoding(seq)
-                seq = einops.rearrange(patches, 'b t np hd -> b (t np) hd')
+                seq = einops.rearrange(seq, 'b t np hd -> b (t np) hd')
             else:  
-                seq = einops.rearrange(patches, 'b t np hd -> b (t np) hd')
-                seq = self.add_spatiotemporal_encoding(seq)
-
+                seq = einops.rearrange(seq, 'b t np hd -> b (t np) hd')
+                if self.sincos:
+                    seq = self.add_sincos_spatiotemporal_encoding(seq)
+                else:
+                    seq = self.add_spatiotemporal_encoding(seq)
         
         # Process through Mamba2 blocks
         for block in self.blocks:
@@ -239,7 +287,8 @@ class MambaMultiPredictor(nn.Module):
         if self.residual_connection:
             # Add residual connection from last input frame
             last_frame = x[:, -1]  # [B, C, H, W]
-            preds = preds + last_frame.unsqueeze(0)  # Broadcast to all predictions
+            gate = torch.sigmoid(self.residual_gate)
+            preds = gate * preds + last_frame.unsqueeze(0)  # Broadcast to all predictions
 
         feat_enc = preds[self.prediction_horizon_idx]  # [B, C, H, W]
         

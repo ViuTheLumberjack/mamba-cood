@@ -92,25 +92,27 @@ def show_pred_gt(predictions, batch_data, global_iteration):
         # feature_residual_image = torch.cat([feature_residual_image, torch.zeros(5 - record_len, feature_residual_image.shape[1], feature_residual_image.shape[2])], dim=0)
         pred_image = torch.cat([pred_image, torch.zeros(5 - record_len, H, W)], dim=0)
         gt_image = torch.cat([gt_image, torch.zeros(5 - record_len, gt_image.shape[1], gt_image.shape[2])], dim=0)
-        diffs = torch.abs(pred_image - gt_image)
+        diffs = gt_image - pred_image
+        to_learn = gt_image - feature_base_image
 
         # Constants
         num_rows = 5  # Number of rows
+        num_cols = 5  # Number of columns
         H, W = feature_base_image.shape[1], feature_base_image.shape[2]  # Dimensions of each subplot (just for demo)
         # titles = ["base", "residual", "pred", "gt"]
-        titles = ["base", "pred", "gt", "diffs"]
+        titles = ["base", "pred", "gt", "diffs", "to_learn"]
 
         # images = [feature_base_image, feature_residual_image, pred_image, gt_image]
-        images = [feature_base_image, pred_image, gt_image, diffs]
+        images = [feature_base_image, pred_image, gt_image, diffs, to_learn]
 
         # Create figure
-        fig, axes = plt.subplots(nrows=num_rows, ncols=4, figsize=(20, 16))
+        fig, axes = plt.subplots(nrows=num_rows, ncols=num_cols, figsize=(num_cols * 5, num_rows * 4))  # Adjust figsize as needed
 
         # Set main title
         fig.suptitle(title_primary, fontsize=16, fontweight='bold')
 
         for row in range(num_rows):
-            for col in range(4):
+            for col in range(num_cols):
                 ax = axes[row, col]
                 ax.imshow(images[col][row], cmap='viridis')
 
