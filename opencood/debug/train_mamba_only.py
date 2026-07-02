@@ -279,10 +279,19 @@ def main():
             loss_feature = criterion.loss_dict['loss_feature']
             mu = criterion.loss_dict['predictions_mean']
             std = criterion.loss_dict['predictions_std']
-            wandb.log({"loss_feature": loss_feature.item(), 
+            fg_loss = criterion.loss_dict['foreground_loss']
+            bg_loss = criterion.loss_dict['background_loss']
+            temp_loss = criterion.loss_dict['temporal_loss']
+            wandb.log({"train/loss_feature": loss_feature.item(), 
                         "it": global_iteration})
-            wandb.log({"predictions_mean": mu.item(), "it": global_iteration})
-            wandb.log({"predictions_std": std.item(), "it": global_iteration})
+            wandb.log({"train/foreground_loss": fg_loss.item(),
+                        "it": global_iteration})
+            wandb.log({"train/background_loss": bg_loss.item(),
+                        "it": global_iteration})
+            wandb.log({"train/temporal_loss": temp_loss.item(),
+                        "it": global_iteration})
+            wandb.log({"train/predictions_mean": mu.item(), "it": global_iteration})
+            wandb.log({"train/predictions_std": std.item(), "it": global_iteration})
 
             #show in wandb the 2d feature maps: current -> pred - gt
             if global_iteration % 400 == 0:

@@ -112,7 +112,7 @@ class MambaMultiPredictor(nn.Module):
             else:
                 # Non-factored: still combine spatial (learned) + temporal (sincos)
                 # Keep as nn.Parameter for spatial, compute temporal on-the-fly
-                self.spatial_embed = nn.Parameter(
+                self.spatial_pos = nn.Parameter(
                     torch.randn(1, self.num_patches, self.hidden_dim) * 0.02)
                 total_t = self.past_k + self.num_future_preds
                 self.register_buffer('sincos_encoding',
@@ -144,7 +144,6 @@ class MambaMultiPredictor(nn.Module):
         ])
 
         self.final_norm = nn.RMSNorm(self.hidden_dim)
-        self.residual_gate = nn.Parameter(torch.tensor(0.0)) 
 
         self.reconstruction_heads = nn.ModuleList([
             nn.Sequential(
@@ -240,7 +239,6 @@ class MambaMultiPredictor(nn.Module):
         num_pred_tokens = self.num_future_preds * self.num_patches
         pred_tokens = self.pred_token.expand(B, -1, -1, -1)
 
-
         if self.factored_embeddings and self.factored_temporal_encoding:
             patches, pred_tokens = self.add_factored_temporal_encoding(patches, pred_tokens)
             seq = torch.cat([patches, pred_tokens], dim=1)
@@ -251,10 +249,10 @@ class MambaMultiPredictor(nn.Module):
                 seq = self.add_spatial_and_temporal_encoding(seq)
                 seq = einops.rearrange(seq, 'b t np hd -> b (t np) hd')
             else:  
-                seq = einops.rearrange(seq, 'b t np hd -> b (t np) hd')
                 if self.sincos:
                     seq = self.add_sincos_spatiotemporal_encoding(seq)
-                else:
+                seq = einops.rearrange(seq, 'b t np hd -> b (t np) hd')
+                if not self.sincos:
                     seq = self.add_spatiotemporal_encoding(seq)
         
         # Process through Mamba2 blocks

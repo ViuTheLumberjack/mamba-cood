@@ -97,7 +97,7 @@ class CharbonnierLoss(nn.Module):
         eps: A small value to avoid division by zero.
     """
 
-    def __init__(self, eps: float = 1e-6, reduction: str = 'mean') -> None:
+    def __init__(self, eps: float = 1e-6, reduction: str = 'none') -> None:
         super().__init__()
         self.eps = eps
         self.reduction = reduction
@@ -106,7 +106,15 @@ class CharbonnierLoss(nn.Module):
         diff = input - target
         loss = torch.sqrt(diff * diff + self.eps)
 
-        return loss.mean()
+        match self.reduction:
+            case 'mean':
+                return loss.mean()
+            case 'sum':
+                return loss.sum()
+            case 'none':
+                return loss
+            case _:
+                raise ValueError(f"Invalid reduction mode: {self.reduction}. Supported modes are 'none', 'mean', and 'sum'.")
 
 class FeatureMapPredictionLoss(nn.Module):
     def __init__(self, args):
@@ -124,6 +132,11 @@ class FeatureMapPredictionLoss(nn.Module):
         self.delay_arg = args.get('delay_arg', 0.1) # delay loss beta
         self.delay_weight = args.get('delay_weight', 1.0) # lamda delay
         self.delay_loss_func = _init_delay_loss(self.delay_type, self.delay_arg)
+
+        self.fg_weight = args.get('fg_weight', 10.0) # lamda foreground
+        self.bg_weight = args.get('bg_weight', 1.0) # lamda
+        self.temp_weight = args.get('temp_weight', 5.0) # lamda temporal
+
         self.loss_dict = {}            
 
     def delay_loss(self, output, target, weight=None):
@@ -142,7 +155,7 @@ class FeatureMapPredictionLoss(nn.Module):
         if weight is not None:
             delay_loss = delay_loss * weight
         
-        return self.delay_weight * delay_loss
+        return delay_loss
         
     def forward(self, feature_pred, predictions, target_dict):
         """
@@ -159,6 +172,7 @@ class FeatureMapPredictionLoss(nn.Module):
         current = target_dict_copy['ego']['current_features']
         feature_gt = target_dict_copy['ego']['gt_features']
         record_len = target_dict_copy['ego']['record_len']
+
         ego_list = target_dict_copy['ego']['ego_list']
         
         loss = 0
@@ -180,14 +194,18 @@ class FeatureMapPredictionLoss(nn.Module):
         pred = einops.rearrange(pred, 't b ... -> (t b) ...')
         gt = einops.rearrange(gt, 't b ... -> (t b) ...')
 
-        fg_weight = (gt.abs().sum(1, keepdim=True) != 0).float()  # foreground mask
-        fg_weight = fg_weight + 0.1  # minimum weight for background
+        #fg_weight = (gt.abs().sum(1, keepdim=True) != 0).float()  # foreground mask
+        #fg_weight = fg_weight + 0.1  # minimum weight for background
 
-        delay_loss = self.delay_loss(pred, gt, weight=fg_weight)
+        delay_loss = self.delay_loss(pred, gt, weight=None)
         delay_loss = einops.rearrange(delay_loss, '(t b) ... -> t b ...', b=B)
+        gt = einops.rearrange(gt, '(t b) ... -> t b ...', b=B)
+        fg = (gt.abs().sum(dim=2, keepdim=True) > 1).float()
+        fg_loss = (delay_loss * fg).sum() / (fg.sum() * C + 1e-6)
+        bg_loss = (delay_loss * (1 - fg)).sum() / ((1 - fg).sum() * C + 1e-6)
 
         # Foreground mask: active in any timestep
-        fg_temp = (gt_diff.abs().sum(1, keepdim=True) != 0).float()
+        fg_temp = (gt_diff.abs().sum(2, keepdim=True) != 0).float()
         fg_temp = fg_temp + 0.1
 
         temp_loss = self.delay_loss(pred_diff, gt_diff, weight=fg_temp)
@@ -198,13 +216,15 @@ class FeatureMapPredictionLoss(nn.Module):
         #delay_loss = delay_loss * ego_flag
         #delay_loss = delay_loss.sum() / (ego_flag.sum() + 1e-6)
 
-        loss += delay_loss.mean()
-        loss += temp_loss.mean()
+        loss += (fg_loss * self.fg_weight) + (bg_loss * self.bg_weight) + (temp_loss.mean() * self.temp_weight)
 
-        loss = loss / len(record_len)
+        loss = loss / sum(record_len)
         
         self.loss_dict.update({
                                'loss_feature': loss, 
+                               'foreground_loss': fg_loss,
+                               'background_loss': bg_loss,
+                               'temporal_loss': temp_loss.mean(),
                                'predictions_mean': predictions.mean(),
                                'predictions_std': predictions.std()
                                })

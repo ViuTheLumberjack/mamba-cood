@@ -173,6 +173,7 @@ model:
         use_bidirectional: False
         dropout: 0.1
         residual: False
+        sincos: True
         factored_embeddings: True
         factored_temporal_encoding: True
         encoder_config:
