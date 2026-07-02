@@ -10,7 +10,7 @@ import yaml
 import torch
 import tqdm
 from tensorboardX import SummaryWriter
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, Subset
 from opencood.tools import train_utils, inference_utils
 from opencood.utils import eval_utils
 from opencood.models.delay import build_delay_module
@@ -27,6 +27,7 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 
+## TODO: take a look at MLFlow
 
 def train_parser():
     parser = argparse.ArgumentParser(description="synthetic data generation")
@@ -34,7 +35,7 @@ def train_parser():
     parser.add_argument('--freeze_heads', type=bool, default=False) #False: train the heads, True: freeze the heads
     parser.add_argument('--model_dir', default=None, help='Continued training path')
     parser.add_argument('--mode', type=str, default='feature')
-    parser.add_argument('--split_dataset', type=str, default='test')  #validate, test
+    parser.add_argument('--split_dataset', type=str, default='validate')  #validate, test
     parser.add_argument('--forward_type', type=str, default='wo_backbone')  #wo_backbone: the feature is given by disk saved previously, classic: as the original
     parser.add_argument('--len_past', type=str, default=4)  #validate, test
     parser.add_argument('--info', type=str, default='') 
@@ -47,7 +48,7 @@ def train_parser():
     return opt
 
 
-def show_pred_gt(predictions, batch_data, global_iteration):
+def show_pred_gt(predictions, batch_data, global_iteration, phase='train'):
     # print('ok')
     choose_ex = 0
     record_len = batch_data['ego']['record_len'][choose_ex]
@@ -92,18 +93,19 @@ def show_pred_gt(predictions, batch_data, global_iteration):
         # feature_residual_image = torch.cat([feature_residual_image, torch.zeros(5 - record_len, feature_residual_image.shape[1], feature_residual_image.shape[2])], dim=0)
         pred_image = torch.cat([pred_image, torch.zeros(5 - record_len, H, W)], dim=0)
         gt_image = torch.cat([gt_image, torch.zeros(5 - record_len, gt_image.shape[1], gt_image.shape[2])], dim=0)
+        residual = pred_image - feature_base_image
         diffs = gt_image - pred_image
         to_learn = gt_image - feature_base_image
 
         # Constants
-        num_rows = 5  # Number of rows
-        num_cols = 5  # Number of columns
+        num_rows = 5  # Number of columns
         H, W = feature_base_image.shape[1], feature_base_image.shape[2]  # Dimensions of each subplot (just for demo)
         # titles = ["base", "residual", "pred", "gt"]
-        titles = ["base", "pred", "gt", "diffs", "to_learn"]
+        titles = ["base", "pred", "gt", "residual", "diffs", "to_learn"]
+        num_cols = len(titles)  # Number of rows
 
         # images = [feature_base_image, feature_residual_image, pred_image, gt_image]
-        images = [feature_base_image, pred_image, gt_image, diffs, to_learn]
+        images = [feature_base_image, pred_image, gt_image, residual, diffs, to_learn]
 
         # Create figure
         fig, axes = plt.subplots(nrows=num_rows, ncols=num_cols, figsize=(num_cols * 5, num_rows * 4))  # Adjust figsize as needed
@@ -112,9 +114,14 @@ def show_pred_gt(predictions, batch_data, global_iteration):
         fig.suptitle(title_primary, fontsize=16, fontweight='bold')
 
         for row in range(num_rows):
+            min_value_ax = min(images[-1][row].min().item(), images[-2][row].min().item())
+            max_value_ax = max(images[-1][row].max().item(), images[-2][row].max().item())
             for col in range(num_cols):
                 ax = axes[row, col]
-                ax.imshow(images[col][row], cmap='viridis')
+
+                vmin = min_value_ax if col >= 3 else None
+                vmax = max_value_ax if col >= 3 else None
+                ax.imshow(images[col][row], cmap='viridis', vmin=vmin, vmax=vmax)
 
                 min_value = images[col][row].min().item()
                 max_value = images[col][row].max().item()
@@ -129,7 +136,7 @@ def show_pred_gt(predictions, batch_data, global_iteration):
         plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to fit titles
 
         #save in wandb
-        wandb.log({f"train/images/{t}": [wandb.Image(plt)], "it": global_iteration})
+        wandb.log({f"{phase}/images-{t}": [wandb.Image(plt)], "it": global_iteration})
         plt.close()
     
 
@@ -160,21 +167,22 @@ def main():
     opt.distributed = False
 
     print('-----------------Dataset Building------------------')
-    opencood_train_dataset = build_dataset(hypes, visualize=False, train=True)
-    opencood_validate_dataset = build_dataset(hypes, visualize=False, train=False)
+    opencood_train_dataset_og = build_dataset(hypes, visualize=False, train=True)
+    opencood_train_dataset = Subset(opencood_train_dataset_og, range(6330, 6431))  # Use only the first 1000 samples for training
+    opencood_validate_dataset_og = build_dataset(hypes, visualize=False, train=False)
+    opencood_validate_dataset = Subset(opencood_validate_dataset_og, range(0, 100))  # Use only the first 1000 samples for validation
 
-    
     train_loader = DataLoader(opencood_train_dataset,
                                 batch_size=1,
                                 num_workers=num_workers,   #8
-                                collate_fn=opencood_train_dataset.collate_batch_train,
+                                collate_fn=opencood_train_dataset_og.collate_batch_train,
                                 shuffle=True,
                                 pin_memory=False,
                                 drop_last=True)
     val_loader = DataLoader(opencood_validate_dataset,
                             batch_size=1,
                             num_workers=num_workers,    #
-                            collate_fn=opencood_train_dataset.collate_batch_test,
+                            collate_fn=opencood_validate_dataset_og.collate_batch_test,
                             shuffle=False,
                             pin_memory=False,
                             drop_last=True)
@@ -240,9 +248,6 @@ def main():
         model.train()
         for i, batch_data in tqdm.tqdm(enumerate(train_loader)):
             print('step training %d' % i)
-            # the model will be evaluation mode during validation
-
-            model.zero_grad()
             optimizer.zero_grad()
 
             data_dict = train_utils.to_device(batch_data, device)
@@ -253,13 +258,13 @@ def main():
             
             ## log in wandb the percentage of zero frames in total_feature
             zero_frames = (total_feature == 0).all(dim=(2, 3, 4)).sum().item() / (total_feature.shape[0] * total_feature.shape[1])
-            wandb.log({"input_zero_frames": zero_frames, "it": global_iteration})
+            wandb.log({"train-stats/input_zero_frames": zero_frames, "it": global_iteration})
             zero_percentage = (total_feature == 0).sum().item() / total_feature.numel()
-            wandb.log({"input_zeroes": zero_percentage, "it": global_iteration}) 
+            wandb.log({"train-stats/input_zeroes": zero_percentage, "it": global_iteration}) 
             ## also log the num of zero elements in gt 
             gt_features = data_dict['ego']['gt_features']
             gt_zero_percentage = (gt_features == 0).sum().item() / gt_features.numel()
-            wandb.log({"gt_zeroes": gt_zero_percentage, "it": global_iteration})
+            wandb.log({"train-stats/gt_zeroes": gt_zero_percentage, "it": global_iteration})
 
             # case1 : late fusion train --> only ego needed,
             # and ego is random selected
@@ -282,20 +287,22 @@ def main():
             fg_loss = criterion.loss_dict['foreground_loss']
             bg_loss = criterion.loss_dict['background_loss']
             temp_loss = criterion.loss_dict['temporal_loss']
-            wandb.log({"train/loss_feature": loss_feature.item(), 
+            wandb.log({"train-stats/loss_feature": loss_feature.item(), 
                         "it": global_iteration})
-            wandb.log({"train/foreground_loss": fg_loss.item(),
+            wandb.log({"train-stats/foreground_loss": fg_loss.item(),
                         "it": global_iteration})
-            wandb.log({"train/background_loss": bg_loss.item(),
+            wandb.log({"train-stats/background_loss": bg_loss.item(),
                         "it": global_iteration})
-            wandb.log({"train/temporal_loss": temp_loss.item(),
+            wandb.log({"train-stats/temporal_loss": temp_loss.item(),
                         "it": global_iteration})
-            wandb.log({"train/predictions_mean": mu.item(), "it": global_iteration})
-            wandb.log({"train/predictions_std": std.item(), "it": global_iteration})
+            wandb.log({"train-stats/foreground_ratio": criterion.loss_dict['foreground_ratio'].item(),
+                        "it": global_iteration})
+            wandb.log({"train-stats/predictions_mean": mu.item(), "it": global_iteration})
+            wandb.log({"train-stats/predictions_std": std.item(), "it": global_iteration})
 
             #show in wandb the 2d feature maps: current -> pred - gt
             if global_iteration % 400 == 0:
-                show_pred_gt(intermediate_preds.detach(), batch_data, global_iteration)
+                show_pred_gt(intermediate_preds.detach(), batch_data, global_iteration, phase='train')
 
             criterion.logging(epoch, i, len(train_loader), pbar=pbar2)
             pbar2.update(1)
@@ -345,8 +352,13 @@ def main():
                     total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
                     feature_pred, intermediate_preds = model(total_feature)
 
+                    if global_iteration % 400 == 0:
+                        show_pred_gt(intermediate_preds.detach(), batch_data, global_iteration, phase='val')
+
                     final_loss = criterion(feature_pred, intermediate_preds, data_dict) 
                     valid_ave_loss.append(final_loss.item())
+
+                    global_iteration +=1
 
             valid_ave_loss = statistics.mean(valid_ave_loss)
             print('At epoch %d, the validation loss is %f' % (epoch, valid_ave_loss))

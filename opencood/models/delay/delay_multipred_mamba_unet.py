@@ -67,7 +67,7 @@ class MambaUNet(nn.Module):
         self.num_future_preds = len(self.prediction_horizon_list)
         self.prediction_horizon_idx = self.prediction_horizon_list.index(self.prediction_horizon)
         
-        self.residual_gate = nn.Parameter(torch.tensor(-3.0)) 
+        self.residual_gate = nn.Parameter(torch.tensor(0.0)) 
 
         self.encoder = get_encoder(self.encoder_config)
         self.predictor = MambaMultiPredictor(args) if args.get('predictor_type', 'simple') == 'simple' else MambaMultiPredictor4D(args)
@@ -91,8 +91,8 @@ class MambaUNet(nn.Module):
         preds = self.decoder(predictions, hs)
         
         # Add the last input frame to the predictions
-        
-        preds = 1 * preds + x[:, -1].unsqueeze(0)  
+        gate = torch.sigmoid(self.residual_gate)
+        preds = preds + (gate) * x[:, -1].unsqueeze(0)  
         
         return preds[self.prediction_horizon_idx], preds
 

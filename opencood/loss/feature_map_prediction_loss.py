@@ -198,33 +198,37 @@ class FeatureMapPredictionLoss(nn.Module):
         #fg_weight = fg_weight + 0.1  # minimum weight for background
 
         delay_loss = self.delay_loss(pred, gt, weight=None)
-        delay_loss = einops.rearrange(delay_loss, '(t b) ... -> t b ...', b=B)
-        gt = einops.rearrange(gt, '(t b) ... -> t b ...', b=B)
-        fg = (gt.abs().sum(dim=2, keepdim=True) > 1).float()
+
+        fg = (gt.abs().sum(dim=1, keepdim=True) > 1e-3).float()
         fg_loss = (delay_loss * fg).sum() / (fg.sum() * C + 1e-6)
+        fg_loss = fg_loss * self.fg_weight
         bg_loss = (delay_loss * (1 - fg)).sum() / ((1 - fg).sum() * C + 1e-6)
+        bg_loss = bg_loss * self.bg_weight
 
         # Foreground mask: active in any timestep
         fg_temp = (gt_diff.abs().sum(2, keepdim=True) != 0).float()
-        fg_temp = fg_temp + 0.1
 
-        temp_loss = self.delay_loss(pred_diff, gt_diff, weight=fg_temp)
+        temp_loss = self.delay_loss(pred_diff, gt_diff, weight=None)
+        temp_fg_loss = (temp_loss * fg_temp).sum() / (fg_temp.sum() * C + 1e-6)
+        temp_bg_loss = (temp_loss * (1 - fg_temp)).sum() / ((1 - fg_temp).sum() * C + 1e-6)
 
+        temp_loss = self.fg_weight * temp_fg_loss + self.bg_weight * temp_bg_loss
+        temp_loss = temp_loss * self.temp_weight
         #ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(0).repeat(delay_loss.shape[0], 1, delay_loss.shape[2], delay_loss.shape[3], delay_loss.shape[4]).cuda()
         #print(ego_flag.shape, delay_loss.shape)
 
         #delay_loss = delay_loss * ego_flag
         #delay_loss = delay_loss.sum() / (ego_flag.sum() + 1e-6)
 
-        loss += (fg_loss * self.fg_weight) + (bg_loss * self.bg_weight) + (temp_loss.mean() * self.temp_weight)
-
-        loss = loss / sum(record_len)
+        loss = fg_loss + bg_loss + temp_loss
+        loss = loss * self.delay_weight
         
         self.loss_dict.update({
                                'loss_feature': loss, 
                                'foreground_loss': fg_loss,
+                               'foreground_ratio': fg.sum() / (fg.sum() + (1 - fg).sum()),
                                'background_loss': bg_loss,
-                               'temporal_loss': temp_loss.mean(),
+                               'temporal_loss': temp_loss,
                                'predictions_mean': predictions.mean(),
                                'predictions_std': predictions.std()
                                })
