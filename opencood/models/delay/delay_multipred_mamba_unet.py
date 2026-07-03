@@ -67,7 +67,7 @@ class MambaUNet(nn.Module):
         self.num_future_preds = len(self.prediction_horizon_list)
         self.prediction_horizon_idx = self.prediction_horizon_list.index(self.prediction_horizon)
         
-        self.residual_gate = nn.Parameter(torch.tensor(0.0)) 
+        self.residual_gate = nn.Parameter(torch.tensor(-6.0)) 
 
         self.encoder = get_encoder(self.encoder_config)
         self.predictor = MambaMultiPredictor(args) if args.get('predictor_type', 'simple') == 'simple' else MambaMultiPredictor4D(args)

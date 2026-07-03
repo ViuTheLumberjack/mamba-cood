@@ -39,6 +39,7 @@ def train_parser():
     parser.add_argument('--forward_type', type=str, default='wo_backbone')  #wo_backbone: the feature is given by disk saved previously, classic: as the original
     parser.add_argument('--len_past', type=str, default=4)  #validate, test
     parser.add_argument('--info', type=str, default='') 
+    parser.add_argument('--subset', type=int, default=None, help='Number of samples to use for training. If None, use the entire dataset.')
 
     parser.add_argument('--global_sort_detections', action='store_true',
                     help='whether to globally sort detections by confidence score.'
@@ -114,14 +115,10 @@ def show_pred_gt(predictions, batch_data, global_iteration, phase='train'):
         fig.suptitle(title_primary, fontsize=16, fontweight='bold')
 
         for row in range(num_rows):
-            min_value_ax = min(images[-1][row].min().item(), images[-2][row].min().item())
-            max_value_ax = max(images[-1][row].max().item(), images[-2][row].max().item())
             for col in range(num_cols):
                 ax = axes[row, col]
 
-                vmin = min_value_ax if col >= 3 else None
-                vmax = max_value_ax if col >= 3 else None
-                ax.imshow(images[col][row], cmap='viridis', vmin=vmin, vmax=vmax)
+                ax.imshow(images[col][row], cmap='viridis')
 
                 min_value = images[col][row].min().item()
                 max_value = images[col][row].max().item()
@@ -136,6 +133,7 @@ def show_pred_gt(predictions, batch_data, global_iteration, phase='train'):
         plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to fit titles
 
         #save in wandb
+        print(f"Logging images for {phase} at time step {t} and global iteration {global_iteration}")
         wandb.log({f"{phase}/images-{t}": [wandb.Image(plt)], "it": global_iteration})
         plt.close()
     
@@ -168,9 +166,13 @@ def main():
 
     print('-----------------Dataset Building------------------')
     opencood_train_dataset_og = build_dataset(hypes, visualize=False, train=True)
-    opencood_train_dataset = Subset(opencood_train_dataset_og, range(6330, 6431))  # Use only the first 1000 samples for training
     opencood_validate_dataset_og = build_dataset(hypes, visualize=False, train=False)
-    opencood_validate_dataset = Subset(opencood_validate_dataset_og, range(0, 100))  # Use only the first 1000 samples for validation
+    if opt.subset is not None:
+        opencood_train_dataset = Subset(opencood_train_dataset_og, range(0, opt.subset))
+        opencood_validate_dataset = Subset(opencood_validate_dataset_og, range(0, opt.subset))  # Use only the first 1000 samples for validation
+    else:
+        opencood_train_dataset = opencood_train_dataset_og  # Use the entire dataset for training
+        opencood_validate_dataset = opencood_validate_dataset_og  # Use the entire dataset for validation
 
     train_loader = DataLoader(opencood_train_dataset,
                                 batch_size=1,
@@ -295,13 +297,15 @@ def main():
                         "it": global_iteration})
             wandb.log({"train-stats/temporal_loss": temp_loss.item(),
                         "it": global_iteration})
+            wandb.log({"train-stats/residual_loss": residual_loss.item(),
+                        "it": global_iteration})
             wandb.log({"train-stats/foreground_ratio": criterion.loss_dict['foreground_ratio'].item(),
                         "it": global_iteration})
             wandb.log({"train-stats/predictions_mean": mu.item(), "it": global_iteration})
             wandb.log({"train-stats/predictions_std": std.item(), "it": global_iteration})
 
             #show in wandb the 2d feature maps: current -> pred - gt
-            if global_iteration % 400 == 0:
+            if global_iteration % 49 == 0:
                 show_pred_gt(intermediate_preds.detach(), batch_data, global_iteration, phase='train')
 
             criterion.logging(epoch, i, len(train_loader), pbar=pbar2)
@@ -352,7 +356,7 @@ def main():
                     total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
                     feature_pred, intermediate_preds = model(total_feature)
 
-                    if global_iteration % 400 == 0:
+                    if global_iteration % 49 == 0:
                         show_pred_gt(intermediate_preds.detach(), batch_data, global_iteration, phase='val')
 
                     final_loss = criterion(feature_pred, intermediate_preds, data_dict) 

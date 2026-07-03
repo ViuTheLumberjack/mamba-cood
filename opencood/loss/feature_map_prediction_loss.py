@@ -190,6 +190,18 @@ class FeatureMapPredictionLoss(nn.Module):
         pred_diff = predictions[1:] - predictions[:-1]      # [T-1, B, C, H, W]
         gt_diff   = gt[1:] - gt[:-1]                         # [T-1, B, C, H, W]
 
+        pred_delta = predictions - current.unsqueeze(0)
+        gt_delta = feature_gt - current.unsqueeze(0)
+
+        res_loss = self.delay_loss(pred_delta, gt_delta)
+        fg = (gt_delta.abs().sum(dim=2, keepdim=True) > 1e-3).float()
+        bg = 1.0 - fg
+
+        res_fg_loss = (res_loss * fg).sum() / (fg.sum() * C + 1e-6)
+        res_bg_loss = (res_loss * bg).sum() / (bg.sum() * C + 1e-6)
+
+        res_loss = self.fg_weight * res_fg_loss + self.bg_weight * res_bg_loss
+        
         #print(pred.shape, gt.shape)
         pred = einops.rearrange(pred, 't b ... -> (t b) ...')
         gt = einops.rearrange(gt, 't b ... -> (t b) ...')
@@ -206,7 +218,7 @@ class FeatureMapPredictionLoss(nn.Module):
         bg_loss = bg_loss * self.bg_weight
 
         # Foreground mask: active in any timestep
-        fg_temp = (gt_diff.abs().sum(2, keepdim=True) != 0).float()
+        fg_temp = (gt_diff.abs().sum(2, keepdim=True) > 1e-3).float()
 
         temp_loss = self.delay_loss(pred_diff, gt_diff, weight=None)
         temp_fg_loss = (temp_loss * fg_temp).sum() / (fg_temp.sum() * C + 1e-6)
@@ -219,8 +231,8 @@ class FeatureMapPredictionLoss(nn.Module):
 
         #delay_loss = delay_loss * ego_flag
         #delay_loss = delay_loss.sum() / (ego_flag.sum() + 1e-6)
-
-        loss = fg_loss + bg_loss + temp_loss
+        
+        loss = fg_loss + bg_loss + temp_loss + res_loss
         loss = loss * self.delay_weight
         
         self.loss_dict.update({
@@ -229,6 +241,7 @@ class FeatureMapPredictionLoss(nn.Module):
                                'foreground_ratio': fg.sum() / (fg.sum() + (1 - fg).sum()),
                                'background_loss': bg_loss,
                                'temporal_loss': temp_loss,
+                               'residual_loss': res_loss,
                                'predictions_mean': predictions.mean(),
                                'predictions_std': predictions.std()
                                })

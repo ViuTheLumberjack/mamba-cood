@@ -207,7 +207,7 @@ model:
           activations: 
             - LeakyReLU
             - Identity
-            - Identity
+            - ReLU
           reps:
             - 2
             - 2
