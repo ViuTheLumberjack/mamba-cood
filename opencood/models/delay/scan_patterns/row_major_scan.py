@@ -12,6 +12,9 @@ class RowMajorScan2D(nn.Module):
 
         self.bidirectional = bidirectional
 
+    def get_num_scans(self):
+        return 2 if self.bidirectional else 1
+
     def forward(self, x):
         # x shape: [Batch, Channels, Height, Width]
         B, C, H, W = x.shape
@@ -38,7 +41,7 @@ class RowMajorScan2D(nn.Module):
         C = x.shape[2]
         
         # Extract the 2 processed sequences
-        
+
         # 1. Unscan row-major forward
         y1 = x[:, 0]
         out_1 = y1.view(B, C, H, W)

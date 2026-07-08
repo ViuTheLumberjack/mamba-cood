@@ -4,6 +4,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from mamba_ssm import Mamba, Mamba2
 from einops.layers.torch import Rearrange 
+from opencood.models.delay.scan_patterns.row_major_scan import RowMajorScan2D
+from opencood.models.delay.scan_patterns.column_major_scan import ColumnMajorScan2D  
+from opencood.models.delay.scan_patterns.cross_scan2d import CrossScan2D
 
 class MambaBlock(nn.Module):
     """Mamba2 block with pre-norm and residual connection"""
@@ -55,16 +58,14 @@ class MambaMultiPredictor4D(nn.Module):
 
         self.past_k = args.get('past_k', 4) + 1 # Number of past frames to use for prediction (if using pred token)
 
+        self.scan_type = args.get('scan_type', 'cross_scan')
         # Patch embedding
         match self.scan_type:
             case 'row_major':
-                from opencood.models.delay.scan_patterns.row_major_scan import RowMajorScan2D
                 self.scan = RowMajorScan2D(bidirectional=self.use_bidirectional)
             case 'column_major':
-                from opencood.models.delay.scan_patterns.column_major_scan import ColumnMajorScan2D  
                 self.scan = ColumnMajorScan2D(bidirectional=self.use_bidirectional)
             case 'cross_scan':
-                from opencood.models.delay.scan_patterns.cross_scan2d import CrossScan2D
                 self.scan = CrossScan2D(bidirectional=self.use_bidirectional)
             case _:
                 raise ValueError(f"Unknown scan type: {self.scan_type}")
@@ -79,11 +80,11 @@ class MambaMultiPredictor4D(nn.Module):
         # Learnable positional encodings
         # Combined spatiotemporal encoding
         self.spatiotemporal_pos = nn.Parameter(
-            torch.randn(1, 4, (self.num_future_preds + self.past_k)*self.num_patches, self.hidden_dim) * 0.02
+            torch.randn(1, self.scan.get_num_scans(), (self.num_future_preds + self.past_k)*self.num_patches, self.hidden_dim) * 0.02
         )
 
         # Prediction token (alternative to using last frame patches)
-        self.pred_token = nn.Parameter(torch.randn(1, 4, self.num_future_preds*self.num_patches, self.hidden_dim) * 0.02)
+        self.pred_token = nn.Parameter(torch.randn(1, self.scan.get_num_scans(), self.num_future_preds*self.num_patches, self.hidden_dim) * 0.02)
         self.pred_horizon_bias = nn.Parameter(torch.randn(self.num_future_preds, 1, 1, self.hidden_dim) * 0.5)
 
         # Mamba2 backbone with residual connections and normalization
@@ -92,7 +93,7 @@ class MambaMultiPredictor4D(nn.Module):
         self.blocks = nn.ModuleList([nn.Sequential(*[
             block_cls(self.hidden_dim, self.d_state, self.d_conv, self.expand) 
             for _ in range(self.num_layers)
-        ]) for _ in range(4)])  # 4 parallel scan patterns
+        ]) for _ in range(self.scan.get_num_scans())])  # 4 parallel scan patterns
 
         self.final_norm = nn.RMSNorm(self.hidden_dim)     
 
@@ -136,7 +137,7 @@ class MambaMultiPredictor4D(nn.Module):
         p = einops.rearrange(p, 'b s np hd -> s b np hd')  # [B, 4, T+T_pred, num_patches, hidden_dim]
         # Process through Mamba2 blocks
         processed_seqs = []
-        for i in range(4):
+        for i in range(self.scan.get_num_scans()):
             sc_seq = p[i].contiguous()
             block = self.blocks[i]
             # Extract sequence i: [B*T, C, H*W]

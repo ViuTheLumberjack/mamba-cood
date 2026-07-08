@@ -11,6 +11,9 @@ class ColumnMajorScan2D(nn.Module):
         super().__init__()
 
         self.bidirectional = bidirectional
+        
+    def get_num_scans(self):
+        return 2 if self.bidirectional else 1
 
     def forward(self, x):
         # x shape: [Batch, Channels, Height, Width]

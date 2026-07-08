@@ -12,6 +12,9 @@ class CrossScan2D(nn.Module):
 
         self.bidirectional = bidirectional
 
+    def get_num_scans(self):
+        return 4 if self.bidirectional else 2
+
     def forward(self, x):
         # x shape: [Batch, Channels, Height, Width]
         B, C, H, W = x.shape
