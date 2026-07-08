@@ -6,6 +6,8 @@ import math
 from mamba_ssm import Mamba, Mamba2 # TODO: add mamba 3 for RoPE
 from einops.layers.torch import Rearrange 
 
+# TODO: maybe change to row major + time major
+
 class MambaBlock(nn.Module):
     """Mamba2 block with pre-norm and residual connection"""
     def __init__(self, hidden_dim, d_state=64, d_conv=8, expand=2, dropout=0.1, norm=True):
@@ -86,6 +88,8 @@ class MambaMultiPredictor(nn.Module):
 
         self.past_k = args.get('past_k', 4) + 1 # Number of past frames to use for prediction (if using pred token)
 
+        if self.residual_connection:
+            self.residual_gate = nn.Parameter(-6.0)
         # Patch embedding
         self.flatten = nn.Unfold(kernel_size=self.patch_size, stride=self.patch_size)
         self.embed = nn.Linear(self.input_dim, self.hidden_dim)
@@ -242,16 +246,16 @@ class MambaMultiPredictor(nn.Module):
         if self.factored_embeddings and self.factored_temporal_encoding:
             patches, pred_tokens = self.add_factored_temporal_encoding(patches, pred_tokens)
             seq = torch.cat([patches, pred_tokens], dim=1)
-            seq = einops.rearrange(seq, 'b t np hd -> b (t np) hd')
+            seq = einops.rearrange(seq, 'b t np hd -> b (np t) hd')
         else:
             seq = torch.cat([patches, pred_tokens], dim=1)
             if self.factored_embeddings:
                 seq = self.add_spatial_and_temporal_encoding(seq)
-                seq = einops.rearrange(seq, 'b t np hd -> b (t np) hd')
+                seq = einops.rearrange(seq, 'b t np hd -> b (np t) hd')
             else:  
                 if self.sincos:
                     seq = self.add_sincos_spatiotemporal_encoding(seq)
-                seq = einops.rearrange(seq, 'b t np hd -> b (t np) hd')
+                seq = einops.rearrange(seq, 'b t np hd -> b (np t) hd')
                 if not self.sincos:
                     seq = self.add_spatiotemporal_encoding(seq)
         
@@ -262,12 +266,23 @@ class MambaMultiPredictor(nn.Module):
         seq = self.final_norm(seq)
         
         # Extract prediction tokens output
-        pred_seq = seq[:, -num_pred_tokens:]  # [B, num_future_preds * num_patches, hidden_dim]
-        pred_seq = einops.rearrange(
-            pred_seq, 'b (f np) hd -> f b np hd', 
-            f=self.num_future_preds, np=self.num_patches
-        )
-        
+        if False:
+            pred_seq = seq[:, -num_pred_tokens:]  # [B, num_future_preds * num_patches, hidden_dim]
+            pred_seq = einops.rearrange(
+                pred_seq, 'b (f np) hd -> f b np hd', 
+                f=self.num_future_preds, np=self.num_patches
+            )
+        else:   
+            tt = T + self.num_future_preds
+            seq = einops.rearrange(
+                seq,
+                'b (np tt) hd -> b np tt hd',
+                np=self.num_patches,
+                tt=tt,
+            )
+            pred_seq = seq[:, :, T:, :]  # [B, NP, F, HD]
+            pred_seq = einops.rearrange(pred_seq, 'b np f hd -> f b np hd')
+
         # Add positional bias for prediction horizon
         pred_seq = pred_seq + self.pred_horizon_bias.expand(-1, B, self.num_patches, -1)  # [num_future_preds, B, num_patches, hidden_dim]
 
@@ -286,7 +301,7 @@ class MambaMultiPredictor(nn.Module):
             # Add residual connection from last input frame
             last_frame = x[:, -1]  # [B, C, H, W]
             gate = torch.sigmoid(self.residual_gate)
-            preds = gate * preds + last_frame.unsqueeze(0)  # Broadcast to all predictions
+            preds = preds + gate * last_frame.unsqueeze(0)  # Broadcast to all predictions
 
         feat_enc = preds[self.prediction_horizon_idx]  # [B, C, H, W]
         

@@ -289,6 +289,7 @@ def main():
             fg_loss = criterion.loss_dict['foreground_loss']
             bg_loss = criterion.loss_dict['background_loss']
             temp_loss = criterion.loss_dict['temporal_loss']
+            residual_loss = criterion.loss_dict['residual_loss']
             wandb.log({"train-stats/loss_feature": loss_feature.item(), 
                         "it": global_iteration})
             wandb.log({"train-stats/foreground_loss": fg_loss.item(),

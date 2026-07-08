@@ -165,22 +165,23 @@ model:
         height: 6
         width: 22
         hidden_dim: *hidden_dim
-        patch_size: 4
-        num_layers: 8
+        patch_size: 2
+        num_layers: 4
         d_state: 64
         d_conv: 4
         expand: 2
         use_bidirectional: False
-        dropout: 0.2
+        dropout: 0.1
         residual: False
-        image_mode: True
-        factored_embeddings: True
-        factored_temporal_encoding: True
         encoder_config:
           type: conv
           input_channels: &in_channels 8
           hidden_dim: *hidden_dim
           num_layers: 3
+          activations: 
+            - LeakyReLU
+            - LeakyReLU
+            - LeakyReLU
           reps: 
             - 2
             - 2
@@ -200,6 +201,10 @@ model:
           height: 48
           width: 176
           num_layers: 3
+          activations: 
+            - LeakyReLU
+            - Identity
+            - ReLU
           reps: 
             - 2
             - 2

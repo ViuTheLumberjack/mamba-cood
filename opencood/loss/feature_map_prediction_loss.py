@@ -132,6 +132,7 @@ class FeatureMapPredictionLoss(nn.Module):
         self.delay_arg = args.get('delay_arg', 0.1) # delay loss beta
         self.delay_weight = args.get('delay_weight', 1.0) # lamda delay
         self.delay_loss_func = _init_delay_loss(self.delay_type, self.delay_arg)
+        self.normalized = args.get('normalized', True) # whether to normalize the loss
 
         self.fg_weight = args.get('fg_weight', 10.0) # lamda foreground
         self.bg_weight = args.get('bg_weight', 1.0) # lamda
@@ -211,11 +212,20 @@ class FeatureMapPredictionLoss(nn.Module):
 
         delay_loss = self.delay_loss(pred, gt, weight=None)
 
-        fg = (gt.abs().sum(dim=1, keepdim=True) > 1e-3).float()
-        fg_loss = (delay_loss * fg).sum() / (fg.sum() * C + 1e-6)
-        fg_loss = fg_loss * self.fg_weight
-        bg_loss = (delay_loss * (1 - fg)).sum() / ((1 - fg).sum() * C + 1e-6)
-        bg_loss = bg_loss * self.bg_weight
+        if not self.normalized:
+            fg = (gt.abs().sum(dim=1, keepdim=True) > 1e-3).float()
+
+            fg_loss = (delay_loss * fg).sum() / (fg.sum() * C + 1e-6)
+            fg_loss = fg_loss * self.fg_weight
+            bg_loss = (delay_loss * (1 - fg)).sum() / ((1 - fg).sum() * C + 1e-6)
+            bg_loss = bg_loss * self.bg_weight
+        else:
+            gt_norm = gt / (gt.detach().amax(dim=(-2, -1), keepdim=True) + 1e-6)
+            w = 0.1 + 2.0 * (gt.abs().sum(1, keepdim=True)).float() + 20.0 * gt_norm.pow(2)
+            
+            delay_loss = (delay_loss * w).sum() / (w.sum() * C + 1e-6)
+            fg_loss = delay_loss
+            bg_loss = torch.tensor(0.0).cuda()
 
         # Foreground mask: active in any timestep
         fg_temp = (gt_diff.abs().sum(2, keepdim=True) > 1e-3).float()

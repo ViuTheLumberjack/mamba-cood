@@ -52,7 +52,7 @@ class Conv2DBlock(torch.nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=torch.nn.ReLU):
         super().__init__()
         self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
-        self.bn = torch.nn.BatchNorm2d(out_channels)
+        self.bn = torch.nn.GroupNorm(8, out_channels)
         self.act = activation()
 
     def forward(self, x):
@@ -66,7 +66,7 @@ class Conv2DTransposeBlock(torch.nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=torch.nn.ReLU):
         super().__init__()
         self.conv = torch.nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding, output_padding=padding)
-        self.bn = torch.nn.BatchNorm2d(out_channels)
+        self.bn = torch.nn.GroupNorm(8, out_channels)
         self.act = activation()
 
     def forward(self, x):

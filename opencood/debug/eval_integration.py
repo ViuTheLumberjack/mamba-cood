@@ -139,7 +139,7 @@ def test_parser():
     parser.add_argument('--delay', type=int, default=None)
     
     parser.add_argument('--module_delay', action='store_true', default=False)
-    parser.add_argument('--baseline', type=str, default='MODEL_v2xset/v2x-vit/delay400ms_3dcnn/net_epoch67.pth')
+    parser.add_argument('--baseline', type=str, default=None)
     #wo_backbone: jump the backbone part that generate the feature map and read it from the disk, saved previously
     #classic: use the backbone to generate the feature map
     parser.add_argument('--forward_type', type=str, default='wo_backbone')  #wo_backbone, classic
@@ -155,7 +155,7 @@ def main():
                                                     'the results in single ' \
                                                     'image mode or video mode'
 
-    hypes = yaml_utils.load_yaml(None, opt)
+    hypes = yaml_utils.load_yaml(opt.name_yaml, None)
 
     print(opt)
 
@@ -168,9 +168,9 @@ def main():
 
     if opt.delay is not None:
         hypes['module_delay'] = True
-        hypes['wild_setting']['async_overhead'] = int(opt.delay) * 100
-        hypes['delay']['future_delay'] = opt.delay
-        hypes['model']['args']['delay']['args']['future_delay'] = int(opt.delay) * 100
+        hypes['wild_setting']['async_overhead'] = int(opt.delay) 
+        hypes['delay']['future_delay'] = int(opt.delay)
+        hypes['model']['args']['delay']['args']['future_delay'] = int(opt.delay)
 
     print('module delay:', hypes['module_delay'])
     print('split dataset:', hypes['split_dataset'])
@@ -209,8 +209,6 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     print(f'Loading Model from checkpoint: specific_path {opt.specific_path} and specific_epoch {opt.specific_epoch}')
-    saved_path = opt.model_dir
-    # _, model = train_utils.load_saved_model(saved_path, model, specific_path=opt.specific_path, specific_epoch=opt.specific_epoch)
     delay_model = torch.load(opt.specific_path, weights_only=True)
 
     # change all the delaymodel keys to module_delay.*

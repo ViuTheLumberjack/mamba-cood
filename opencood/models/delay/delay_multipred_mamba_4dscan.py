@@ -23,96 +23,12 @@ class MambaBlock(nn.Module):
     def forward(self, x):
         return x + self.dropout(self.mamba(self.norm(x)))
 
-class BiMambaBlock(nn.Module):
-    """Bidirectional Mamba2 block with pre-norm and residual connection"""
-    def __init__(self, hidden_dim, d_state=64, d_conv=8, expand=2, dropout=0.1, norm=True):
-        super().__init__()
-        self.norm = nn.LayerNorm(hidden_dim) if norm else nn.Identity()
-        self.mamba_fwd = Mamba2(
-            d_model=hidden_dim,
-            d_state=d_state,
-            d_conv=d_conv,
-            expand=expand
-        )
-        self.mamba_bwd = Mamba2(
-            d_model=hidden_dim,
-            d_state=d_state,
-            d_conv=d_conv,
-            expand=expand
-        )
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-
-    def forward(self, x):
-        x_norm = self.norm(x)
-        fwd_out = self.mamba_fwd(x_norm)
-        bwd_out = self.mamba_bwd(torch.flip(x_norm, dims=[1]))
-        bwd_out = torch.flip(bwd_out, dims=[1])
-        return x + self.dropout(fwd_out + bwd_out)
-
-class CrossScan2D(nn.Module):
-    """
-    Takes a 2D spatial tensor and flattens it into 4 different 1D scan patterns.
-    """
-    def forward(self, x):
-        # x shape: [Batch, Channels, Height, Width]
-        B, C, H, W = x.shape
-        
-        # 1. Row-major forward (Normal flattening)
-        # Traverses left-to-right, row by row.
-        scan_1 = x.flatten(2)  # Shape: [B, C, H*W]
-        
-        # 2. Row-major backward
-        # Flips vertically and horizontally, then flattens.
-        scan_2 = torch.flip(x, dims=[2, 3]).flatten(2)
-        
-        # 3. Column-major forward
-        # Transposes Height and Width, then flattens. Traverses top-to-bottom, col by col.
-        scan_3 = x.transpose(2, 3).flatten(2)
-        
-        # 4. Column-major backward
-        # Flips vertically and horizontally, transposes, then flattens.
-        scan_4 = torch.flip(x, dims=[2, 3]).transpose(2, 3).flatten(2)
-        
-        # Stack them together along a new dimension for easy processing
-        # Shape: [Batch, 4, Channels, Sequence_Length]
-        return torch.stack([scan_1, scan_2, scan_3, scan_4], dim=1)
-
-    def unscan(self, x, H, W):
-        # x shape: [Batch, 4, Channels, H*W] 
-        # H, W are the original spatial dimensions
-        B = x.shape[0]
-        C = x.shape[2]
-        
-        # Extract the 4 processed sequences
-        y1, y2, y3, y4 = x[:, 0], x[:, 1], x[:, 2], x[:, 3]
-        
-        # 1. Unscan row-major forward
-        out_1 = y1.view(B, C, H, W)
-        
-        # 2. Unscan row-major backward (View first, then flip back)
-        out_2 = torch.flip(y2.view(B, C, H, W), dims=[2, 3])
-        
-        # 3. Unscan column-major forward (View as W, H first, then transpose back)
-        out_3 = y3.view(B, C, W, H).transpose(2, 3)
-        
-        # 4. Unscan column-major backward
-        out_4 = torch.flip(y4.view(B, C, W, H).transpose(2, 3), dims=[2, 3])
-        
-        # Merge the 4 representations back into a single feature map
-        # Standard practice is simply summing them up.
-        out = out_1 + out_2 + out_3 + out_4
-        
-        return out 
-
 class MambaMultiPredictor4D(nn.Module):
     def __init__(
         self, 
         args,
     ):
         super().__init__()
-
-        self.image_mode = args.get('image_mode', True)
-
         self.input_channels = args.get('input_channels', 8)
         self.height = args.get('height', 48)
         self.width = args.get('width', 176)
@@ -140,8 +56,19 @@ class MambaMultiPredictor4D(nn.Module):
         self.past_k = args.get('past_k', 4) + 1 # Number of past frames to use for prediction (if using pred token)
 
         # Patch embedding
-        self.scan = CrossScan2D()
-
+        match self.scan_type:
+            case 'row_major':
+                from opencood.models.delay.scan_patterns.row_major_scan import RowMajorScan2D
+                self.scan = RowMajorScan2D(bidirectional=self.use_bidirectional)
+            case 'column_major':
+                from opencood.models.delay.scan_patterns.column_major_scan import ColumnMajorScan2D  
+                self.scan = ColumnMajorScan2D(bidirectional=self.use_bidirectional)
+            case 'cross_scan':
+                from opencood.models.delay.scan_patterns.cross_scan2d import CrossScan2D
+                self.scan = CrossScan2D(bidirectional=self.use_bidirectional)
+            case _:
+                raise ValueError(f"Unknown scan type: {self.scan_type}")
+            
         self.embed = nn.Linear(self.input_dim, self.hidden_dim)
         self.embed_norm = nn.RMSNorm(self.hidden_dim) if False else nn.Identity() 
         self.embed_dropout = nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity()
