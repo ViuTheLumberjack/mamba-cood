@@ -52,7 +52,7 @@ class ColumnMajorScan2D(nn.Module):
             # 4. Unscan column-major backward
             out_4 = torch.flip(y4.view(B, C, W, H).transpose(2, 3), dims=[2, 3])
         else:
-            out_4 = torch.Tensor(0)  # Placeholder for unprocessed sequence
+            out_4 = torch.zeros_like(out_3)  # Placeholder for unprocessed sequence
 
         # Merge the 2 representations back into a single feature map
         # Standard practice is simply summing them up.

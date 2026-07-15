@@ -52,7 +52,7 @@ class RowMajorScan2D(nn.Module):
         
             out_2 = torch.flip(y2.view(B, C, H, W), dims=[2, 3])
         else:
-            out_2 = torch.Tensor(0)  # Placeholder for unprocessed sequence
+            out_2 = torch.zeros_like(out_1)  # Placeholder for unprocessed sequence
 
         # Merge the 2 representations back into a single feature map
         # Standard practice is simply summing them up.

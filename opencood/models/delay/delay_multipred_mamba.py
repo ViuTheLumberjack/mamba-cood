@@ -302,6 +302,7 @@ class MambaMultiPredictor(nn.Module):
             last_frame = x[:, -1]  # [B, C, H, W]
             gate = torch.sigmoid(self.residual_gate)
             preds = preds + gate * last_frame.unsqueeze(0)  # Broadcast to all predictions
+            preds = torch.nn.functional.relu(preds)  # Ensure non-negativity
 
         feat_enc = preds[self.prediction_horizon_idx]  # [B, C, H, W]
         

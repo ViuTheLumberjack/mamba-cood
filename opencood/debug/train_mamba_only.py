@@ -5,6 +5,7 @@
 import argparse
 import os
 import statistics
+from einops import einops
 import yaml
 
 import torch
@@ -283,6 +284,8 @@ def main():
             #set in wandb
             train_loss.append(final_loss.item())
 
+            criterion.logging(epoch, i, len(train_loader), pbar=pbar2)
+
             loss_feature = criterion.loss_dict['loss_feature']
             mu = criterion.loss_dict['predictions_mean']
             std = criterion.loss_dict['predictions_std']
@@ -305,11 +308,32 @@ def main():
             wandb.log({"train-stats/predictions_mean": mu.item(), "it": global_iteration})
             wandb.log({"train-stats/predictions_std": std.item(), "it": global_iteration})
 
+            ## LOSS between the feature_saved and the predictions, to see if the model is learning something
+            baseline_loss = criterion(feature_saved, einops.repeat(feature_saved, "b c h w -> t b c h w", t=4), data_dict)
+            loss_feature = criterion.loss_dict['loss_feature']
+            mu = criterion.loss_dict['predictions_mean']
+            std = criterion.loss_dict['predictions_std']
+            fg_loss = criterion.loss_dict['foreground_loss']
+            bg_loss = criterion.loss_dict['background_loss']
+            temp_loss = criterion.loss_dict['temporal_loss']
+            residual_loss = criterion.loss_dict['residual_loss']
+            wandb.log({"baseline-stats/loss_feature": loss_feature.item(), 
+                        "it": global_iteration})
+            wandb.log({"baseline-stats/foreground_loss": fg_loss.item(),
+                        "it": global_iteration})
+            wandb.log({"baseline-stats/background_loss": bg_loss.item(),
+                        "it": global_iteration})
+            wandb.log({"baseline-stats/temporal_loss": temp_loss.item(),
+                        "it": global_iteration})
+            wandb.log({"baseline-stats/residual_loss": residual_loss.item(),
+                        "it": global_iteration})
+            wandb.log({"baseline-stats/predictions_mean": mu.item(), "it": global_iteration})
+            wandb.log({"baseline-stats/predictions_std": std.item(), "it": global_iteration})
+
             #show in wandb the 2d feature maps: current -> pred - gt
             if global_iteration % 49 == 0:
                 show_pred_gt(intermediate_preds.detach(), batch_data, global_iteration, phase='train')
 
-            criterion.logging(epoch, i, len(train_loader), pbar=pbar2)
             pbar2.update(1)
 
             final_loss.backward()
@@ -362,6 +386,50 @@ def main():
 
                     final_loss = criterion(feature_pred, intermediate_preds, data_dict) 
                     valid_ave_loss.append(final_loss.item())
+
+                    loss_feature = criterion.loss_dict['loss_feature']
+                    mu = criterion.loss_dict['predictions_mean']
+                    std = criterion.loss_dict['predictions_std']
+                    fg_loss = criterion.loss_dict['foreground_loss']
+                    bg_loss = criterion.loss_dict['background_loss']
+                    temp_loss = criterion.loss_dict['temporal_loss']
+                    residual_loss = criterion.loss_dict['residual_loss']
+                    wandb.log({"val-stats/loss_feature": loss_feature.item(), 
+                                "it": global_iteration})
+                    wandb.log({"val-stats/foreground_loss": fg_loss.item(),
+                                "it": global_iteration})
+                    wandb.log({"val-stats/background_loss": bg_loss.item(),
+                                "it": global_iteration})
+                    wandb.log({"val-stats/temporal_loss": temp_loss.item(),
+                                "it": global_iteration})
+                    wandb.log({"val-stats/residual_loss": residual_loss.item(),
+                                "it": global_iteration})
+                    wandb.log({"val-stats/foreground_ratio": criterion.loss_dict['foreground_ratio'].item(),
+                                "it": global_iteration})
+                    wandb.log({"val-stats/predictions_mean": mu.item(), "it": global_iteration})
+                    wandb.log({"val-stats/predictions_std": std.item(), "it": global_iteration})
+
+                    ## LOSS between the feature_saved and the predictions, to see if the model is learning something
+                    baseline_loss = criterion(feature_saved, einops.repeat(feature_saved, "b c h w -> t b c h w", t=4), data_dict)
+                    loss_feature = criterion.loss_dict['loss_feature']
+                    mu = criterion.loss_dict['predictions_mean']
+                    std = criterion.loss_dict['predictions_std']
+                    fg_loss = criterion.loss_dict['foreground_loss']
+                    bg_loss = criterion.loss_dict['background_loss']
+                    temp_loss = criterion.loss_dict['temporal_loss']
+                    residual_loss = criterion.loss_dict['residual_loss']
+                    wandb.log({"baseline-val-stats/loss_feature": loss_feature.item(), 
+                                "it": global_iteration})
+                    wandb.log({"baseline-val-stats/foreground_loss": fg_loss.item(),
+                                "it": global_iteration})
+                    wandb.log({"baseline-val-stats/background_loss": bg_loss.item(),
+                                "it": global_iteration})
+                    wandb.log({"baseline-val-stats/temporal_loss": temp_loss.item(),
+                                "it": global_iteration})
+                    wandb.log({"baseline-val-stats/residual_loss": residual_loss.item(),
+                                "it": global_iteration})
+                    wandb.log({"baseline-val-stats/predictions_mean": mu.item(), "it": global_iteration})
+                    wandb.log({"baseline-val-stats/predictions_std": std.item(), "it": global_iteration})
 
                     global_iteration +=1
 

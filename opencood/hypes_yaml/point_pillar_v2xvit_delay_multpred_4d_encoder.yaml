@@ -154,6 +154,8 @@ model:
       core_method: MambaUNet
       args:
         predictor_type: 4d
+        scan_type: cross_scan
+        use_bidirectional: False
         future_delay: *future_delay  # ms
         future_delay_list: 
           - 100
@@ -170,7 +172,6 @@ model:
         d_state: 64
         d_conv: 4
         expand: 2
-        use_bidirectional: False
         dropout: 0.1
         residual: False
         encoder_config:
@@ -203,8 +204,8 @@ model:
           num_layers: 3
           activations: 
             - LeakyReLU
-            - Identity
-            - ReLU
+            - LeakyReLU
+            - LeakyReLU
           reps: 
             - 2
             - 2
@@ -226,7 +227,11 @@ loss:
     
     delay_type: 'charbonnier' # delay loss type
     delay_arg: 0.001 # delay loss beta
-    delay_weight: 10.0 # lamda delay
+    normalized: True
+    delay_weight: 1.0 # lamda delay
+    fg_weight: 10.0 # lamda fg
+    bg_weight: 0.1 # lamda bg
+    temp_weight: 0.0 # lamda temporal
     
 optimizer:
   core_method: Adam

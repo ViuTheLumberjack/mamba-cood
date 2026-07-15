@@ -137,6 +137,7 @@ class FeatureMapPredictionLoss(nn.Module):
         self.fg_weight = args.get('fg_weight', 10.0) # lamda foreground
         self.bg_weight = args.get('bg_weight', 1.0) # lamda
         self.temp_weight = args.get('temp_weight', 5.0) # lamda temporal
+        self.cosine_weight = args.get('cosine_weight', 0.5) # lamda cosine similarity
 
         self.loss_dict = {}            
 
@@ -188,21 +189,13 @@ class FeatureMapPredictionLoss(nn.Module):
         pred = predictions #[:, i]
         gt = feature_gt #[:, i]
 
-        pred_diff = predictions[1:] - predictions[:-1]      # [T-1, B, C, H, W]
-        gt_diff   = gt[1:] - gt[:-1]                         # [T-1, B, C, H, W]
+        #prepend currnet
+        pred_2 = torch.cat([current.unsqueeze(0), pred], dim=0)  # [T+1, B, C, H, W]
+        gt_2 = torch.cat([current.unsqueeze(0), gt], dim=0)
 
-        pred_delta = predictions - current.unsqueeze(0)
-        gt_delta = feature_gt - current.unsqueeze(0)
+        pred_diff = pred_2[1:] - pred_2[:-1]      # [T, B, C, H, W]
+        gt_diff   = gt_2[1:] - gt_2[:-1]         # [T, B, C, H, W]
 
-        res_loss = self.delay_loss(pred_delta, gt_delta)
-        fg = (gt_delta.abs().sum(dim=2, keepdim=True) > 1e-3).float()
-        bg = 1.0 - fg
-
-        res_fg_loss = (res_loss * fg).sum() / (fg.sum() * C + 1e-6)
-        res_bg_loss = (res_loss * bg).sum() / (bg.sum() * C + 1e-6)
-
-        res_loss = self.fg_weight * res_fg_loss + self.bg_weight * res_bg_loss
-        
         #print(pred.shape, gt.shape)
         pred = einops.rearrange(pred, 't b ... -> (t b) ...')
         gt = einops.rearrange(gt, 't b ... -> (t b) ...')
@@ -211,38 +204,45 @@ class FeatureMapPredictionLoss(nn.Module):
         #fg_weight = fg_weight + 0.1  # minimum weight for background
 
         delay_loss = self.delay_loss(pred, gt, weight=None)
+        fg = (gt.abs().sum(dim=1, keepdim=True) > 1e-3).float()
 
         if not self.normalized:
-            fg = (gt.abs().sum(dim=1, keepdim=True) > 1e-3).float()
-
-            fg_loss = (delay_loss * fg).sum() / (fg.sum() * C + 1e-6)
+            fg_loss = (delay_loss * fg).sum() / (fg.sum() + 1e-6)
             fg_loss = fg_loss * self.fg_weight
-            bg_loss = (delay_loss * (1 - fg)).sum() / ((1 - fg).sum() * C + 1e-6)
+            bg_loss = (delay_loss * (1 - fg)).sum() / ((1 - fg).sum() + 1e-6)
             bg_loss = bg_loss * self.bg_weight
         else:
             gt_norm = gt / (gt.detach().amax(dim=(-2, -1), keepdim=True) + 1e-6)
             w = 0.1 + 2.0 * (gt.abs().sum(1, keepdim=True)).float() + 20.0 * gt_norm.pow(2)
             
-            delay_loss = (delay_loss * w).sum() / (w.sum() * C + 1e-6)
+            delay_loss = (delay_loss * w).sum() / (w.sum() + 1e-6)
             fg_loss = delay_loss
             bg_loss = torch.tensor(0.0).cuda()
 
         # Foreground mask: active in any timestep
-        fg_temp = (gt_diff.abs().sum(2, keepdim=True) > 1e-3).float()
+        if self.temp_weight > 0:
+            fg_temp = (gt_diff.abs().sum(2, keepdim=True) > 1e-3).float()
+            temp_loss = self.delay_loss(pred_diff, gt_diff, weight=None)
+            temp_fg_loss = (temp_loss * fg_temp).sum() / (fg_temp.sum() + 1e-6)
+            temp_bg_loss = (temp_loss * (1 - fg_temp)).sum() / ((1 - fg_temp).sum() + 1e-6)
 
-        temp_loss = self.delay_loss(pred_diff, gt_diff, weight=None)
-        temp_fg_loss = (temp_loss * fg_temp).sum() / (fg_temp.sum() * C + 1e-6)
-        temp_bg_loss = (temp_loss * (1 - fg_temp)).sum() / ((1 - fg_temp).sum() * C + 1e-6)
-
-        temp_loss = self.fg_weight * temp_fg_loss + self.bg_weight * temp_bg_loss
-        temp_loss = temp_loss * self.temp_weight
+            temp_loss = self.fg_weight * temp_fg_loss + self.bg_weight * temp_bg_loss
+            temp_loss = temp_loss * self.temp_weight
+        else:
+            temp_loss = torch.tensor(0.0).cuda()
         #ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(0).repeat(delay_loss.shape[0], 1, delay_loss.shape[2], delay_loss.shape[3], delay_loss.shape[4]).cuda()
         #print(ego_flag.shape, delay_loss.shape)
 
         #delay_loss = delay_loss * ego_flag
         #delay_loss = delay_loss.sum() / (ego_flag.sum() + 1e-6)
+        if self.cosine_weight > 0:
+            l_cos = F.cosine_similarity(pred * fg, gt * fg, dim=1)
+            l_cos = 1 - (l_cos.sum() / (fg.sum() + 1e-6))
+            l_cos = l_cos * self.cosine_weight
+        else:
+            l_cos = torch.tensor(0.0).cuda()
         
-        loss = fg_loss + bg_loss + temp_loss + res_loss
+        loss = fg_loss + bg_loss + temp_loss + l_cos
         loss = loss * self.delay_weight
         
         self.loss_dict.update({
@@ -251,7 +251,7 @@ class FeatureMapPredictionLoss(nn.Module):
                                'foreground_ratio': fg.sum() / (fg.sum() + (1 - fg).sum()),
                                'background_loss': bg_loss,
                                'temporal_loss': temp_loss,
-                               'residual_loss': res_loss,
+                               'residual_loss': l_cos,
                                'predictions_mean': predictions.mean(),
                                'predictions_std': predictions.std()
                                })

@@ -150,6 +150,7 @@ model:
 
       # add decoder later
 
+    exclude_ego: true
     delay:
       core_method: MambaUNet
       args:
@@ -206,7 +207,7 @@ model:
           num_layers: 3
           activations: 
             - LeakyReLU
-            - Identity
+            - LeakyReLU
             - LeakyReLU
           reps:
             - 2
@@ -220,6 +221,7 @@ model:
             - 2
             - 2
             - 2
+
 loss:
   core_method: point_pillar_loss
   args:
@@ -228,10 +230,12 @@ loss:
     
     delay_type: 'charbonnier' # delay loss type
     delay_arg: 0.000001 # delay loss beta
+    normalized: True
     delay_weight: 1.0 # lamda delay
     fg_weight: 10.0 # lamda fg
     bg_weight: 0.1 # lamda bg
     temp_weight: 1.0 # lamda temporal
+    cosine_weight: 0.0 # lamda cosine similarity
 
 optimizer:
   core_method: Adam

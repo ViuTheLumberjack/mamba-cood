@@ -133,27 +133,25 @@ class PointPillarTransformer(nn.Module):
         
         if self.module_delay_flag:
             # filter the ego vehicle out
+            past_feature = data_dict['past_features']      
+            total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
+
+            # Use the future frame predictor
+            feature_encoded, predictions = self.module_delay(total_feature)
+
             if self.exclude_ego:
-                ego_list = torch.Tensor(data_dict['ego_list']).bool().squeeze(0)
+                T, B, C, H, W = predictions.shape
+                ego_list = torch.Tensor(data_dict['ego_list']).bool().squeeze(0).cuda()
                 ego_list = ~ego_list
                 
                 past_feature = data_dict['past_features']    
                 # concatenate along time dimension        
-                total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
-                ego_mat = ego_list.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, total_feature.shape[1], total_feature.shape[2], total_feature.shape[3], total_feature.shape[4]).cuda()
-                total_feature = total_feature * ego_mat
-            else:
-                past_feature = data_dict['past_features']      
-                total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
+                ego_mat = einops.repeat(ego_list, 'b -> b c h w', c=C, h=H, w=W)
+                feature_encoded = torch.where(ego_mat, feature_encoded, feature_saved)
 
-            # Use the future frame predictor
-            feature_encoded, predictions = self.module_delay(total_feature)
-            
-            # IMP2: residuals, TODO: change me later
-            #res = feature_saved
-            #for t in range(predictions.shape[0]):
-            #    predictions[t] = predictions[t] + res
-            #    res = predictions[t] 
+                ego_mat = einops.repeat(ego_mat, 'b c h w -> t b c h w', t=T)
+                feature_saved_unsqueezed = einops.repeat(feature_saved, 'b c h w -> t b c h w', t=predictions.shape[0])
+                predictions = torch.where(ego_mat, feature_encoded, feature_saved_unsqueezed)
             
             if self.residual_delay: 
                 compensated_features = feature_encoded + feature_saved
@@ -166,7 +164,7 @@ class PointPillarTransformer(nn.Module):
             compensated_features = feature_saved
             predictions = feature_saved.unsqueeze(0)
 
-        feature_encoded = compensated_features.detach()
+        feature_encoded = compensated_features
 
         spatial_features_2d = self.naive_compressor.decoder(feature_encoded)
         regroup_feature, mask = regroup(spatial_features_2d, record_len, self.max_cav)

@@ -119,7 +119,7 @@ class MambaMultiPredictor4D(nn.Module):
         
         p = einops.rearrange(x, 'b t c h w -> (b t) c h w')
         p = self.scan(p)  # [B*T, 4, C, SEQ_LEN]
-        p = einops.rearrange(p, '(b t) s c np -> b s (t np) c', b=B, t=T)  # [B*T*4, num_patches, C]
+        p = einops.rearrange(p, '(b t) s c np -> b s (t np) c', b=B, t=T)  # [B*T*S, num_patches, C]
         
         if self.input_dim != self.hidden_dim:
             p = self.embed(p)
@@ -134,7 +134,7 @@ class MambaMultiPredictor4D(nn.Module):
         p = torch.cat([p, pred_tokens], dim=2)
         p = self.add_positional_encoding(p)
         
-        p = einops.rearrange(p, 'b s np hd -> s b np hd')  # [B, 4, T+T_pred, num_patches, hidden_dim]
+        p = einops.rearrange(p, 'b s np hd -> s b np hd')  # [B, S, T+T_pred, num_patches, hidden_dim]
         # Process through Mamba2 blocks
         processed_seqs = []
         for i in range(self.scan.get_num_scans()):
@@ -145,7 +145,7 @@ class MambaMultiPredictor4D(nn.Module):
 
             processed_seqs.append(sc_seq)
         
-        p = torch.stack(processed_seqs, dim=0)  # [B, 4, T+T_pred, num_patches, hidden_dim]
+        p = torch.stack(processed_seqs, dim=0)  # [S, B, T+T_pred, num_patches, hidden_dim]
         p = self.final_norm(p)
         
         # Extract prediction tokens output
@@ -171,6 +171,7 @@ class MambaMultiPredictor4D(nn.Module):
             # Add residual connection from last input frame
             last_frame = x[:, -1]  # [B, C, H, W]
             p = p + last_frame.unsqueeze(0)  # Broadcast to all predictions
+            p = torch.nn.functional.relu(p)
 
         feat_enc = p[self.prediction_horizon_idx]  # [B, C, H, W]
         

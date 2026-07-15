@@ -66,8 +66,8 @@ class CrossScan2D(nn.Module):
             y4 = x[:, 3]
             out_4 = torch.flip(y4.view(B, C, W, H).transpose(2, 3), dims=[2, 3])
         else:
-            out_3 = torch.Tensor(0)  # Placeholder for unprocessed sequence
-            out_4 = torch.Tensor(0)  # Placeholder for unprocessed sequence
+            out_3 = torch.zeros_like(out_1)  # Placeholder for unprocessed sequence
+            out_4 = torch.zeros_like(out_1)  # Placeholder for unprocessed sequence
         
         # Merge the 4 representations back into a single feature map
         # Standard practice is simply summing them up.
