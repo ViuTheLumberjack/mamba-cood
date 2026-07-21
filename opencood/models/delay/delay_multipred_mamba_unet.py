@@ -92,7 +92,7 @@ class MambaUNet(nn.Module):
         
         # Add the last input frame to the predictions
         gate = torch.sigmoid(self.residual_gate)
-        preds = gate * preds + x[:, -1].unsqueeze(0)  
+        preds = preds + gate * x[:, -1].unsqueeze(0)  
         preds = torch.nn.functional.relu(preds)
         
         return preds[self.prediction_horizon_idx], preds

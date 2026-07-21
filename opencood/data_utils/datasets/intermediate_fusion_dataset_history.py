@@ -70,48 +70,31 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
                                    os.path.isdir(os.path.join(root_dir, x))])
         
         # Update the length of the records to take into account the past and intermediate predictions
-        self.len_recordz = []
+        self.valid_indices = []
 
-        # loop over all scenarios
-        for (i, scenario_folder) in enumerate(scenario_folders):
-            # at least 1 cav should show up
-            cav_list = sorted([x for x in os.listdir(scenario_folder)
-                               if os.path.isdir(
-                    os.path.join(scenario_folder, x))])
-            assert len(cav_list) > 0
-
-            # roadside unit data's id is always negative, so here we want to
-            # make sure they will be in the end of the list as they shouldn't
-            # be ego vehicle.
-            if int(cav_list[0]) < 0:
-                cav_list = cav_list[1:] + [cav_list[0]]
-
-            # loop over all CAV data
-            for (j, cav_id) in enumerate(cav_list):
-                # save all yaml files to the dictionary
-                cav_path = os.path.join(scenario_folder, cav_id)
-
-                # use the frame number as key, the full path as the values
-                yaml_files = \
-                    sorted([os.path.join(cav_path, x)
-                            for x in os.listdir(cav_path) if
-                            x.endswith('.yaml') and 'additional' not in x])
-                timestamps = self.extract_timestamps(yaml_files)
-                    
-                # Assume all cavs will have the same timestamps length. Thus
-                # we only need to calculate for the first vehicle in the
-                # scene.
-                if j == 0:  # ego 
-                    # we regard the agent with the minimum id as the ego
-                    num_ego_timestamps = len(timestamps) - self.len_past - len(self.intermediate_preds)
-                    if not self.len_recordz:
-                        self.len_recordz.append(num_ego_timestamps)
-                    else:
-                        prev_last = self.len_recordz[-1]
-                        self.len_recordz.append(prev_last + num_ego_timestamps)
+        future_steps = max(delay_ms // 100 for delay_ms in self.intermediate_preds)
+        delay_steps = self.max_delay // 100 if self.async_flag else 0
+        # since non-ego cavs are delayed by delay-steps e.g. 4,
+        # the number of left frames must allow for steps from 8 to 4 as history
+        # while ego vehicle needs only the delay_steps to be left as history
+        left_trim = self.len_past + delay_steps
+        # right trim is useful for ego as further training data.
+        # in inference we will not have the future frames, so we need to trim them out. 
+        right_trim = future_steps if self.train else max(0, future_steps - delay_steps)
+        
+        raw_start = 0
+        for raw_end in self.len_record:
+            scenario_length = raw_end - raw_start
+            valid_start = raw_start + left_trim
+            valid_end = raw_end - right_trim  # exclusive
+            self.valid_indices.extend(range(valid_start, valid_end))
+            raw_start = raw_end
+        
+        print(f"Total valid indices after trimming: {len(self.valid_indices)}")
+        print(f"Valid indices range from {self.valid_indices[0]} to {self.valid_indices[-1]}")
 
     def __len__(self):
-        return self.len_recordz[-1]
+        return len(self.valid_indices)
 
     def __load_sequence(self, delay_key, scenario_index, cav_i, folder_path_main, seq_range) -> tuple[torch.Tensor, list] :
         feature_sequence = []
@@ -135,7 +118,8 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
         return feature_tensor, index_keys
         
     def __getitem__(self, idx):
-        base_data_dict, data_example = self.retrieve_base_data(idx + self.len_past + len(self.intermediate_preds), cur_ego_pose_flag=self.cur_ego_pose_flag)
+        raw_idx = self.valid_indices[idx]
+        base_data_dict, data_example = self.retrieve_base_data(raw_idx, cur_ego_pose_flag=self.cur_ego_pose_flag)
         id_data = idx
 
         processed_data_dict = OrderedDict()

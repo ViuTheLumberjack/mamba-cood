@@ -155,7 +155,7 @@ def main():
         mode_wandb = 'disabled'
         num_workers = 0
     else:
-        num_workers = 16
+        num_workers = 8
         mode_wandb = 'online'
 
     # #create folder in os.path.join(saved_path, 'prova'
@@ -167,14 +167,12 @@ def main():
 
     print('-----------------Dataset Building------------------')
     opencood_train_dataset_og = build_dataset(hypes, visualize=False, train=True)
-    opencood_validate_dataset_og = build_dataset(hypes, visualize=False, train=False)
     if opt.subset is not None:
         opencood_train_dataset = Subset(opencood_train_dataset_og, range(0, opt.subset))
-        opencood_validate_dataset = Subset(opencood_validate_dataset_og, range(0, opt.subset))  # Use only the first 1000 samples for validation
     else:
         opencood_train_dataset = opencood_train_dataset_og  # Use the entire dataset for training
-        opencood_validate_dataset = opencood_validate_dataset_og  # Use the entire dataset for validation
-
+        
+    opencood_validate_dataset = build_dataset(hypes, visualize=False, train=False)
     train_loader = DataLoader(opencood_train_dataset,
                                 batch_size=1,
                                 num_workers=num_workers,   #8
@@ -185,7 +183,7 @@ def main():
     val_loader = DataLoader(opencood_validate_dataset,
                             batch_size=1,
                             num_workers=num_workers,    #
-                            collate_fn=opencood_validate_dataset_og.collate_batch_test,
+                            collate_fn=opencood_validate_dataset.collate_batch_test,
                             shuffle=False,
                             pin_memory=False,
                             drop_last=True)
@@ -241,6 +239,7 @@ def main():
     for epoch in range(0, max(epoches, 50)):
         print('epoch %d' % epoch)
         train_loss = []
+        current_loss = []
         for param_group in optimizer.param_groups:
             print('learning rate updated to %.7f' % param_group["lr"])
         #wandb for lr
@@ -310,6 +309,8 @@ def main():
 
             ## LOSS between the feature_saved and the predictions, to see if the model is learning something
             baseline_loss = criterion(feature_saved, einops.repeat(feature_saved, "b c h w -> t b c h w", t=4), data_dict)
+            current_loss.append(baseline_loss.item())
+            
             loss_feature = criterion.loss_dict['loss_feature']
             mu = criterion.loss_dict['predictions_mean']
             std = criterion.loss_dict['predictions_std']
@@ -359,10 +360,13 @@ def main():
             #save config files in local
 
         train_ave_loss = statistics.mean(train_loss)
+        current_ave_loss = statistics.mean(current_loss)
         wandb.log({"loss/train": train_ave_loss, "epoch": epoch})
+        wandb.log({"loss/train-current": current_ave_loss, "epoch": epoch})
 
         if epoch % hypes['train_params']['eval_freq'] == 0:
             valid_ave_loss = []
+            current_ave_loss = []
             # Create the dictionary for evaluation.
             # also store the confidence score for each prediction
             
@@ -411,6 +415,8 @@ def main():
 
                     ## LOSS between the feature_saved and the predictions, to see if the model is learning something
                     baseline_loss = criterion(feature_saved, einops.repeat(feature_saved, "b c h w -> t b c h w", t=4), data_dict)
+                    current_ave_loss.append(baseline_loss.item())
+                    
                     loss_feature = criterion.loss_dict['loss_feature']
                     mu = criterion.loss_dict['predictions_mean']
                     std = criterion.loss_dict['predictions_std']
@@ -434,9 +440,12 @@ def main():
                     global_iteration +=1
 
             valid_ave_loss = statistics.mean(valid_ave_loss)
+            current_ave_loss = statistics.mean(current_ave_loss)
             print('At epoch %d, the validation loss is %f' % (epoch, valid_ave_loss))
+            print('At epoch %d, the current loss is %f' % (epoch, current_ave_loss))
             # writer.add_scalar('Validate_Loss', valid_ave_loss, epoch)
             wandb.log({"loss/val": valid_ave_loss, "epoch": epoch})
+            wandb.log({"loss/val-current": current_ave_loss, "epoch": epoch})
 
     print('Training Finished, checkpoints saved to %s' % saved_path_dir)
 

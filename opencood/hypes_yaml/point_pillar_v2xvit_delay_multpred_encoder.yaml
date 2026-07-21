@@ -207,7 +207,7 @@ model:
           num_layers: 3
           activations: 
             - LeakyReLU
-            - LeakyReLU
+            - Identity
             - LeakyReLU
           reps:
             - 2
@@ -232,9 +232,9 @@ loss:
     delay_arg: 0.000001 # delay loss beta
     normalized: True
     delay_weight: 1.0 # lamda delay
-    fg_weight: 10.0 # lamda fg
+    fg_weight: 100.0 # lamda fg
     bg_weight: 0.1 # lamda bg
-    temp_weight: 1.0 # lamda temporal
+    temp_weight: 10.0 # lamda temporal
     cosine_weight: 0.0 # lamda cosine similarity
 
 optimizer:
