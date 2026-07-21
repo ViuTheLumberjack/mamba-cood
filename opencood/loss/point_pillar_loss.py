@@ -81,8 +81,8 @@ class PointPillarLoss(nn.Module):
 
         self.cls_weight = args['cls_weight'] # lamda cls
         self.reg_coe = args['reg'] # lamda reg
-        self.delay_beta = args['delay']
-        self.delay_coeff = args.get('delay_coeff', 1.0) # lamda delay
+        #self.delay_beta = args['delay']
+        #self.delay_coeff = args.get('delay_coeff', 1.0) # lamda delay
         self.loss_dict = {}
 
     def delay_loss(self, output, target):
@@ -96,6 +96,8 @@ class PointPillarLoss(nn.Module):
         -------
         loss : float
         """
+        return 0
+
         def charbonnier_loss(x, epsilon=1e-6):
             return torch.sqrt(x * x + epsilon)
         
@@ -126,7 +128,7 @@ class PointPillarLoss(nn.Module):
         record_len = target_dict_copy['ego']['record_len']
         ego_list = target_dict_copy['ego']['ego_list']
 
-        if self.args['module_delay']:
+        if False:
             loss = 0
             # for i in range(len(record_len)):
             ego_flag = torch.Tensor(ego_list[0])
@@ -138,8 +140,8 @@ class PointPillarLoss(nn.Module):
 
             delay_loss = self.delay_loss(pred, gt)
 
+            print(ego_flag, delay_loss.shape)
             ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(0).repeat(delay_loss.shape[0], 1, delay_loss.shape[2], delay_loss.shape[3], delay_loss.shape[4]).cuda()
-            # print(ego_flag.shape, delay_loss.shape)
 
             try:
                 delay_loss = delay_loss * ego_flag

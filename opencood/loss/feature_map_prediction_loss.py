@@ -184,7 +184,7 @@ class FeatureMapPredictionLoss(nn.Module):
         B, T, C, H, W = predictions.shape
         pred = predictions #[:, i]
         gt = feature_gt #[:, i]
-        current = current.unsqueeze(1).repeat(1, T, 1, 1, 1) # [B, T, C, H, W]
+        current = current.unsqueeze(1)  # [B, 1, C, H, W]
 
         if not train:
             for i in range(len(record_len)):
@@ -196,7 +196,7 @@ class FeatureMapPredictionLoss(nn.Module):
             # print(f"ego_flag shape: {ego_flag.shape}")
             pred = pred * ego_flag
             gt = gt * ego_flag
-            current = current * ego_flag
+            current = current * ego_flag[:, 0]
 
         #prepend currnet
         pred_2 = torch.cat([current, pred], dim=1)  # [B, T+1, C, H, W]

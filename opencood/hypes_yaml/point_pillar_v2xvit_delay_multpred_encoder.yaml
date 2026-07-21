@@ -208,7 +208,7 @@ model:
           num_layers: 3
           activations: 
             - LeakyReLU
-            - LeakyReLU
+            - Identity
             - Identity
           reps:
             - 2
@@ -248,5 +248,5 @@ optimizer:
 lr_scheduler:
   core_method: multistep #step, multistep and Exponential support
   gamma: 0.1
-  step_size: [15, 50]
+  step_size: [50]
 

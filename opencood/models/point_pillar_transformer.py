@@ -73,10 +73,6 @@ class PointPillarTransformer(nn.Module):
 
             self.module_delay_flag = True
 
-        # not enough memory
-        self.all_preds = False #len(args['delay']['args']['future_delay_list']) > 1
-        self.residual_delay = args.get('residual_delay', False)
-        
         self.timings = [] 
 
         if args['backbone_fix']:
@@ -140,7 +136,7 @@ class PointPillarTransformer(nn.Module):
             feature_encoded, predictions = self.module_delay(total_feature)
 
             if self.exclude_ego:
-                T, B, C, H, W = predictions.shape
+                B, T, C, H, W = predictions.shape
                 ego_list = torch.Tensor(data_dict['ego_list']).bool().squeeze(0).cuda()
                 ego_list = ~ego_list
                 
@@ -149,22 +145,12 @@ class PointPillarTransformer(nn.Module):
                 ego_mat = einops.repeat(ego_list, 'b -> b c h w', c=C, h=H, w=W)
                 feature_encoded = torch.where(ego_mat, feature_encoded, feature_saved)
 
-                ego_mat = einops.repeat(ego_mat, 'b c h w -> t b c h w', t=T)
-                feature_saved_unsqueezed = einops.repeat(feature_saved, 'b c h w -> t b c h w', t=predictions.shape[0])
-                predictions = torch.where(ego_mat, feature_encoded, feature_saved_unsqueezed)
-            
-            if self.residual_delay: 
-                compensated_features = feature_encoded + feature_saved
-                predictions = predictions + feature_saved.unsqueeze(0).repeat(predictions.shape[0], 1, 1, 1, 1)
-            else:
-                compensated_features = feature_encoded
-                predictions = predictions
-            
+                ego_mat = einops.repeat(ego_mat, 'b c h w -> b t c h w', t=T)
+                feature_saved_unsqueezed = einops.repeat(feature_saved, 'b c h w -> b t c h w', t=T)
+                predictions = torch.where(ego_mat, predictions, feature_saved_unsqueezed)         
         else:
             compensated_features = feature_saved
-            predictions = feature_saved.unsqueeze(0)
-
-        feature_encoded = compensated_features
+            predictions = feature_saved.unsqueeze(1)
 
         spatial_features_2d = self.naive_compressor.decoder(feature_encoded)
         regroup_feature, mask = regroup(spatial_features_2d, record_len, self.max_cav)
