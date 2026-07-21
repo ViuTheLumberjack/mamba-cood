@@ -159,7 +159,7 @@ class FeatureMapPredictionLoss(nn.Module):
         
         return delay_loss
         
-    def forward(self, feature_pred, predictions, target_dict):
+    def forward(self, feature_pred, predictions, target_dict, train=True):
         """
         Parameters
         ----------
@@ -178,31 +178,37 @@ class FeatureMapPredictionLoss(nn.Module):
         ego_list = target_dict_copy['ego']['ego_list']
         
         loss = 0
-        #for i in range(len(record_len)):
-        #    ego_flag = torch.Tensor(ego_list[i])
-        #    # from 0 to 1, and from 1 to 0
-        #    ego_flag = torch.where(ego_flag == 0, 1, 0)
         
         #print(ego_flag)
 
-        T, B, C, H, W = predictions.shape
+        B, T, C, H, W = predictions.shape
         pred = predictions #[:, i]
         gt = feature_gt #[:, i]
+        current = current.unsqueeze(1).repeat(1, T, 1, 1, 1) # [B, T, C, H, W]
+
+        if not train:
+            for i in range(len(record_len)):
+                ego_flag = torch.Tensor(ego_list[i])
+                # from 0 to 1, and from 1 to 0
+                ego_flag = torch.where(ego_flag == 0, 1, 0)
+            
+            ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(4).repeat(1, T, C, H, W).cuda()
+            # print(f"ego_flag shape: {ego_flag.shape}")
+            pred = pred * ego_flag
+            gt = gt * ego_flag
+            current = current * ego_flag
 
         #prepend currnet
-        pred_2 = torch.cat([current.unsqueeze(0), pred], dim=0)  # [T+1, B, C, H, W]
-        gt_2 = torch.cat([current.unsqueeze(0), gt], dim=0)
+        pred_2 = torch.cat([current, pred], dim=1)  # [B, T+1, C, H, W]
+        gt_2 = torch.cat([current, gt], dim=1)
 
-        pred_diff = pred_2[1:] - pred_2[:-1]      # [T, B, C, H, W]
-        gt_diff   = gt_2[1:] - gt_2[:-1]         # [T, B, C, H, W]
+        pred_diff = pred_2[:, 1:] - pred_2[:, :-1]      # [B, T, C, H, W]
+        gt_diff   = gt_2[:, 1:] - gt_2[:, :-1]         # [B, T, C, H, W]
 
         #print(pred.shape, gt.shape)
-        pred = einops.rearrange(pred, 't b ... -> (t b) ...')
-        gt = einops.rearrange(gt, 't b ... -> (t b) ...')
-
-        #fg_weight = (gt.abs().sum(1, keepdim=True) != 0).float()  # foreground mask
-        #fg_weight = fg_weight + 0.1  # minimum weight for background
-
+        pred = einops.rearrange(pred, 'b t ... -> (t b) ...')
+        gt = einops.rearrange(gt, 'b t ... -> (t b) ...')
+            
         delay_loss = self.delay_loss(pred, gt, weight=None)
         fg = (gt.abs().sum(dim=1, keepdim=True) > 1e-3).float()
 
@@ -212,6 +218,8 @@ class FeatureMapPredictionLoss(nn.Module):
             bg_loss = (delay_loss * (1 - fg)).sum() / ((1 - fg).sum() + 1e-6)
             bg_loss = bg_loss * self.bg_weight
         else:
+            # all-in-one fg and bg calculation
+            # the weight is calculated based on the gt, so that the loss is normalized by the gt magnitude
             gt_norm = gt / (gt.detach().amax(dim=(-2, -1), keepdim=True) + 1e-6)
             w = 0.1 + 2.0 * (gt.abs().sum(1, keepdim=True)).float() + 20.0 * gt_norm.pow(2)
             
@@ -230,11 +238,7 @@ class FeatureMapPredictionLoss(nn.Module):
             temp_loss = temp_loss * self.temp_weight
         else:
             temp_loss = torch.tensor(0.0).cuda()
-        #ego_flag = ego_flag.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(0).repeat(delay_loss.shape[0], 1, delay_loss.shape[2], delay_loss.shape[3], delay_loss.shape[4]).cuda()
-        #print(ego_flag.shape, delay_loss.shape)
 
-        #delay_loss = delay_loss * ego_flag
-        #delay_loss = delay_loss.sum() / (ego_flag.sum() + 1e-6)
         if self.cosine_weight > 0:
             l_cos = F.cosine_similarity(pred * fg, gt * fg, dim=1)
             l_cos = 1 - (l_cos.sum() / (fg.sum() + 1e-6))

@@ -64,10 +64,6 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
             root_dir = params['root_dir']
         else:
             root_dir = params['validate_dir']
-        ## override base dataset's __init__ to load the preprocessed features
-        scenario_folders = sorted([os.path.join(root_dir, x)
-                                   for x in os.listdir(root_dir) if
-                                   os.path.isdir(os.path.join(root_dir, x))])
         
         # Update the length of the records to take into account the past and intermediate predictions
         self.valid_indices = []
@@ -309,13 +305,12 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
                     
             current_features = torch.stack(current_features)
             gt_features = torch.stack(gt_features)
-            gt_features = einops.rearrange(gt_features, 'b f c h w -> f b c h w')   
             past_features = torch.stack(past_features)
 
         elif self.params['mode'] == 'no_feature':
             current_features = torch.rand(cav_num, 8, 48, 176)
             past_features = torch.rand(cav_num, self.len_past, 8, 48, 176)
-            gt_features = torch.rand(len(self.intermediate_preds), cav_num,  8, 48, 176)
+            gt_features = torch.rand(cav_num, len(self.intermediate_preds), 8, 48, 176)
 
         data_example.pop('delay_index_total')
         data_example.pop('delay_key_total')

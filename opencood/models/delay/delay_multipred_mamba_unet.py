@@ -79,7 +79,7 @@ class MambaUNet(nn.Module):
             x: [B, T, C, H, W] input frames
         
         Returns:
-            [T, B, C, H, W] predicted next frame
+            [B, T, C, H, W] predicted next frame
         """
         B, T, C, H, W = x.shape
 
@@ -92,10 +92,10 @@ class MambaUNet(nn.Module):
         
         # Add the last input frame to the predictions
         gate = torch.sigmoid(self.residual_gate)
-        preds = preds + gate * x[:, -1].unsqueeze(0)  
+        preds = preds + gate * x[:, -1].unsqueeze(1)  
         preds = torch.nn.functional.relu(preds)
         
-        return preds[self.prediction_horizon_idx], preds
+        return preds[:, self.prediction_horizon_idx], preds
 
 if __name__ == '__main__':
     B, T, C, H, W = 2, 5, 8, 48, 176

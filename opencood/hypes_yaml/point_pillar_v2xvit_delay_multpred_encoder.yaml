@@ -177,6 +177,7 @@ model:
         sincos: True
         factored_embeddings: True
         factored_temporal_encoding: True
+        npt_order: True
         encoder_config:
           type: conv
           input_channels: &in_channels 8
@@ -207,8 +208,8 @@ model:
           num_layers: 3
           activations: 
             - LeakyReLU
-            - Identity
             - LeakyReLU
+            - Identity
           reps:
             - 2
             - 2
@@ -229,12 +230,12 @@ loss:
     reg: 2.0
     
     delay_type: 'charbonnier' # delay loss type
-    delay_arg: 0.000001 # delay loss beta
-    normalized: True
+    delay_arg: 0.000000001 # delay loss beta
+    normalized: False
     delay_weight: 1.0 # lamda delay
-    fg_weight: 100.0 # lamda fg
+    fg_weight: 10.0 # lamda fg
     bg_weight: 0.1 # lamda bg
-    temp_weight: 10.0 # lamda temporal
+    temp_weight: 1.0 # lamda temporal
     cosine_weight: 0.0 # lamda cosine similarity
 
 optimizer:

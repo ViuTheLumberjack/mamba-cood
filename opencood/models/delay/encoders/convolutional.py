@@ -58,21 +58,22 @@ class Decoder(torch.nn.Module):
         for i in range(self.layers):
             in_channels = self.hidden_dim #in = self.hidden_dim // (2 ** (self.layers - i - 1)) 
             out_channels = self.out_channels if i == (self.layers - 1) else self.hidden_dim #// (2 ** (self.layers - i - 2)) 
-            self.arch.append(Conv2DTransposeBlock(in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=self.acts[i]))     
+            last_layer = (i == (self.layers - 1))
+            self.arch.append(Conv2DTransposeBlock(in_channels, out_channels, kernel_size=(3, 3), stride=2, padding=1, activation=self.acts[i], last_layer=last_layer))     
 
     def forward(self, x, hidden_states=None):
-        T, B, C, H, W = x.shape  # T = num_preds (4)
-        x = einops.rearrange(x, 't b c h w -> (t b) c h w')
+        B, T, C, H, W = x.shape  # T = num_preds (4)
+        x = einops.rearrange(x, 'b t c h w -> (b t) c h w')
         for i, layer in enumerate(self.arch):
             if hidden_states:
                 hs = hidden_states.pop()  # [B, C, H, W] — current frame only
-                hs = einops.repeat(hs, 'b c h w -> t b c h w', t=T)
-                hs = einops.rearrange(hs, 't b c h w -> (t b) c h w')  # [B*T, C, H, W]
+                hs = einops.repeat(hs, 'b c h w -> b t c h w', t=T)
+                hs = einops.rearrange(hs, 'b t c h w -> (b t) c h w')  # [B*T, C, H, W]
             else:
                 hs = torch.zeros_like(x)
             
             x = x + hs
             x = layer(x)
 
-        x = einops.rearrange(x, '(t b) c h w -> t b c h w', b=B)
+        x = einops.rearrange(x, '(b t) c h w -> b t c h w', b=B)
         return x
