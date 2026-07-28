@@ -26,6 +26,53 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 
+def setup_finetune_optimizer(hypes, model_without_ddp, freeze_heads=False):
+    optimizer_cfg = hypes["optimizer"]
+
+    delay_lr = optimizer_cfg.get("delay_lr", 3e-5)
+    transformer_lr = optimizer_cfg.get("transformer_lr", 1e-5)
+    other_lr = optimizer_cfg.get("other_lr", transformer_lr)
+
+    delay_params = [
+        p for p in model_without_ddp.module_delay.parameters()
+        if p.requires_grad
+    ]
+    transformer_params = [
+        p for p in model_without_ddp.fusion_net.parameters()
+        if p.requires_grad
+    ]
+
+    assigned_ids = {
+        id(p) for p in delay_params + transformer_params
+    }
+    other_params = [
+        p for p in model_without_ddp.parameters()
+        if p.requires_grad and id(p) not in assigned_ids
+    ]
+
+    param_groups = [
+        {
+            "name": "delay", 
+            "params": delay_params, 
+            "lr": delay_lr
+        },
+        {
+            "name": "transformer",
+            "params": transformer_params,
+            "lr": transformer_lr,
+        },
+    ]
+
+    if other_params:
+        param_groups.append({
+            "name": "other",
+            "params": other_params,
+            "lr": other_lr,
+        })
+
+    optimizer_cls = getattr(torch.optim, optimizer_cfg["core_method"])
+
+    return optimizer_cls(param_groups, **optimizer_cfg["args"])
 
 def train_parser():
     parser = argparse.ArgumentParser(description="synthetic data generation")
@@ -41,7 +88,7 @@ def train_parser():
     parser.add_argument('--freeze_heads', type=bool, default=False) #False: train the heads, True: freeze the heads
     parser.add_argument('--len_past', type=str, default=4)  #validate, test
     parser.add_argument('--saved_path', type=str, default=None) #if None, it is loaded the original model
-    parser.add_argument('--max_epoches', type=int, default=None) #if None, it is loaded the original model
+    parser.add_argument('--max_epoches', type=int, default=10) #if None, it is loaded the original model
 
     # for the integration
     parser.add_argument('--baseline', type=str, default=None)
@@ -251,13 +298,14 @@ def main():
         model_without_ddp = model.module
 
     # define the loss
+    hypes["loss"]["core_method"] = "point_pillar_loss"
     criterion = train_utils.create_loss(hypes)
 
     # optimizer setup
-    optimizer = train_utils.setup_optimizer(hypes, model_without_ddp)
+    optimizer = setup_finetune_optimizer(hypes, model_without_ddp, opt.freeze_heads)
     # lr scheduler setup
     num_steps = len(train_loader)
-    scheduler = train_utils.setup_lr_schedular(hypes, optimizer, num_steps)
+    #scheduler = train_utils.setup_lr_schedular(hypes, optimizer, num_steps)
 
     info_name = opt.info
     # dict_args = vars(self.args)
@@ -356,15 +404,15 @@ def main():
                     scaler.step(optimizer)
                     scaler.update()
 
-                if hypes['lr_scheduler']['core_method'] == 'cosineannealwarm':
-                    scheduler.step_update(epoch * num_steps + 0)
+                #if hypes['lr_scheduler']['core_method'] == 'cosineannealwarm':
+                #    scheduler.step_update(epoch * num_steps + 0)
 
                 global_iteration += 1
 
-            if hypes['lr_scheduler']['core_method'] != 'cosineannealwarm':
-                scheduler.step()
-            if hypes['lr_scheduler']['core_method'] == 'cosineannealwarm':
-                scheduler.step_update(epoch * num_steps + 1)
+            #if hypes['lr_scheduler']['core_method'] != 'cosineannealwarm':
+            #    scheduler.step()
+            #if hypes['lr_scheduler']['core_method'] == 'cosineannealwarm':
+            #    scheduler.step_update(epoch * num_steps + 1)
 
         if epoch % hypes['train_params']['save_freq'] == 0:
             torch.save(model_without_ddp.state_dict(),

@@ -30,7 +30,6 @@ def load_yaml(file, opt=None):
     if opt and opt.model_dir:
         file = os.path.join(opt.model_dir, opt.name_yaml)
 
-
     stream = open(file, 'r')
     loader = yaml.Loader
     loader.add_implicit_resolver(

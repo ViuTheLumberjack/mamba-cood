@@ -137,7 +137,8 @@ def test_parser():
     parser.add_argument('--name_output_result', type=str, default='prova')  #validate, test
     parser.add_argument('--len_past', type=int, default=2)  #validate, test
     parser.add_argument('--delay', type=int, default=None)
-    
+
+    parser.add_argument('--noisy', action='store_true', help='whether to add noise in the localization of the ego vehicle')  
     parser.add_argument('--module_delay', action='store_true', default=False)
     parser.add_argument('--baseline', type=str, default=None)
     #wo_backbone: jump the backbone part that generate the feature map and read it from the disk, saved previously
@@ -165,6 +166,8 @@ def main():
     hypes['split_dataset'] = opt.split_dataset
     hypes['freeze_heads'] = opt.freeze_heads
     hypes['len_past'] = opt.len_past
+
+    hypes['wild_setting']['loc_error'] = opt.noisy
 
     if opt.delay is not None:
         hypes['module_delay'] = True
@@ -287,8 +290,9 @@ def main():
                                        gt_box_tensor,
                                        result_stat,
                                        0.7)
-            
-            if i % 100 == 0:
+
+            #disable the visualization for now, since it is too slow
+            if False:
                 print(f'Processed {i} samples')
                 img_path = os.path.join(opt.model_dir, 'wandb_visualization', str(opt.specific_epoch))
                 os.makedirs(img_path, exist_ok=True)

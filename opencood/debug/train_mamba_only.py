@@ -30,6 +30,9 @@ import numpy as np
 
 ## TODO: take a look at MLFlow
 
+TRAIN_ITERATION_SAVE_FREQ = 999
+VALIDATION_ITERATION_SAVE_FREQ = 999
+
 def train_parser():
     parser = argparse.ArgumentParser(description="synthetic data generation")
     parser.add_argument("--hypes_yaml", type=str, default='opencood/hypes_yaml/point_pillar_v2xvit_delay.yaml', help='data generation yaml file needed ')
@@ -138,7 +141,7 @@ def show_pred_gt(predictions, batch_data, global_iteration, epoch, phase='train'
         wandb.log({f"{phase}/images-{t}": [wandb.Image(plt)], "it": global_iteration, "epoch": epoch})
         plt.close()
     
-def log_wandb_stats(criterion, global_iteration, epoch, phase='train'):
+def log_wandb_stats(criterion, global_iteration, epoch, phase='train', baseline=False):
     loss_feature = criterion.loss_dict['loss_feature']
     mu = criterion.loss_dict['predictions_mean']
     std = criterion.loss_dict['predictions_std']
@@ -146,26 +149,30 @@ def log_wandb_stats(criterion, global_iteration, epoch, phase='train'):
     bg_loss = criterion.loss_dict['background_loss']
     temp_loss = criterion.loss_dict['temporal_loss']
     residual_loss = criterion.loss_dict['residual_loss']
-    wandb.log({f"{phase}/loss_feature": loss_feature.item(), 
-                "it": global_iteration,
+
+    key_prefix = f"{phase}{'-baseline' if baseline else ''}"
+    it_prefix = f"{'val_' if phase == 'val' else ''}it"
+
+    wandb.log({f"{key_prefix}/loss_feature": loss_feature.item(), 
+                f"{it_prefix}": global_iteration,
                 "epoch": epoch})
-    wandb.log({f"{phase}/foreground_loss": fg_loss.item(),
-                "it": global_iteration,
+    wandb.log({f"{key_prefix}/foreground_loss": fg_loss.item(),
+                f"{it_prefix}": global_iteration,
                 "epoch": epoch})
-    wandb.log({f"{phase}/background_loss": bg_loss.item(),
-                "it": global_iteration,
+    wandb.log({f"{key_prefix}/background_loss": bg_loss.item(),
+                f"{it_prefix}": global_iteration,
                 "epoch": epoch})
-    wandb.log({f"{phase}/temporal_loss": temp_loss.item(),
-                "it": global_iteration,
+    wandb.log({f"{key_prefix}/temporal_loss": temp_loss.item(),
+                f"{it_prefix}": global_iteration,
                 "epoch": epoch})
-    wandb.log({f"{phase}/residual_loss": residual_loss.item(),
-                "it": global_iteration,
+    wandb.log({f"{key_prefix}/residual_loss": residual_loss.item(),
+                f"{it_prefix}": global_iteration,
                 "epoch": epoch})
-    wandb.log({f"{phase}/foreground_ratio": criterion.loss_dict['foreground_ratio'].item(),
-                "it": global_iteration,
+    wandb.log({f"{key_prefix}/foreground_ratio": criterion.loss_dict['foreground_ratio'].item(),
+                f"{it_prefix}": global_iteration,
                 "epoch": epoch})
-    wandb.log({f"{phase}/predictions_mean": mu.item(), "it": global_iteration, "epoch": epoch})
-    wandb.log({f"{phase}/predictions_std": std.item(), "it": global_iteration, "epoch": epoch})
+    wandb.log({f"{key_prefix}/predictions_mean": mu.item(), f"{it_prefix}": global_iteration, "epoch": epoch})
+    wandb.log({f"{key_prefix}/predictions_std": std.item(), f"{it_prefix}": global_iteration, "epoch": epoch})
 
 def main():
     opt = train_parser()
@@ -324,12 +331,16 @@ def main():
             log_wandb_stats(criterion, global_iteration, epoch, phase='train-baseline')
 
             #show in wandb the 2d feature maps: current -> pred - gt
-            if global_iteration % 49 == 0:
+            if global_iteration % TRAIN_ITERATION_SAVE_FREQ == 0:
                 show_pred_gt(intermediate_preds.detach(), batch_data, global_iteration, epoch, phase='train')
 
             pbar2.update(1)
 
             final_loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=1.0,
+            )
             optimizer.step()
             
             tot_norm = 0
@@ -377,7 +388,7 @@ def main():
                     total_feature = torch.cat([past_feature, feature_saved.unsqueeze(1)], dim=1) if past_feature is not None else feature_saved.unsqueeze(1)
                     feature_pred, intermediate_preds = model(total_feature)
 
-                    if global_iteration_val % 49 == 0:
+                    if global_iteration_val % VALIDATION_ITERATION_SAVE_FREQ == 0:
                         show_pred_gt(intermediate_preds.detach(), batch_data, global_iteration_val, epoch, phase='val')
 
                     final_loss = criterion(feature_pred, intermediate_preds, data_dict, train=False) 

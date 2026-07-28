@@ -80,6 +80,7 @@ class MambaMultiPredictor(nn.Module):
         self.factored_embeddings = args.get('factored_embeddings', False)
         self.factored_temporal_encoding = args.get('factored_temporal_encoding', False)
         self.sincos = args.get('sincos', True)
+        self.pos_neg_reconstruction = args.get('pos_neg_reconstruction', False)
 
         self.prediction_horizon = args.get('future_delay', 0)
         self.prediction_horizon_list = args.get('future_delay_list', [0])
@@ -150,23 +151,61 @@ class MambaMultiPredictor(nn.Module):
 
         self.final_norm = nn.RMSNorm(self.hidden_dim)
 
-        self.reconstruction_heads = nn.ModuleList([
-            nn.Sequential(
+        if self.pos_neg_reconstruction:
+            self.pos_reconstruction_heads = nn.ModuleList([
                 nn.Sequential(
-                    nn.Linear(self.hidden_dim, self.hidden_dim),
-                    nn.LeakyReLU(),
-                    nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity(),
-                    nn.Linear(self.hidden_dim, self.input_dim)
-                ),
-                Rearrange('b np pd -> b pd np'),
-                nn.Fold(
-                    output_size=(self.height, self.width), 
-                    kernel_size=self.patch_size, 
-                    stride=self.patch_size
+                    nn.Sequential(
+                        nn.Linear(self.hidden_dim, self.hidden_dim),
+                        nn.LeakyReLU(),
+                        nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity(),
+                        nn.Linear(self.hidden_dim, self.input_dim),
+                        nn.ReLU()  # Ensure non-negativity for positive reconstruction
+                    ),
+                    Rearrange('b np pd -> b pd np'),
+                    nn.Fold(
+                        output_size=(self.height, self.width), 
+                        kernel_size=self.patch_size, 
+                        stride=self.patch_size
+                    )
                 )
-            )
-            for _ in range(len(args.get('future_delay_list', [0])))
-        ])        
+                for _ in range(len(args.get('future_delay_list', [0])))
+            ])     
+            self.neg_reconstruction_heads = nn.ModuleList([
+                nn.Sequential(
+                    nn.Sequential(
+                        nn.Linear(self.hidden_dim, self.hidden_dim),
+                        nn.LeakyReLU(),
+                        nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity(),
+                        nn.Linear(self.hidden_dim, self.input_dim),
+                        nn.ReLU()  # Ensure non-negativity for negative reconstruction
+                    ),
+                    Rearrange('b np pd -> b pd np'),
+                    nn.Fold(
+                        output_size=(self.height, self.width), 
+                        kernel_size=self.patch_size, 
+                        stride=self.patch_size
+                    )
+                )
+                for _ in range(len(args.get('future_delay_list', [0])))
+            ])     
+        else:
+            self.reconstruction_heads = nn.ModuleList([
+                nn.Sequential(
+                    nn.Sequential(
+                        nn.Linear(self.hidden_dim, self.hidden_dim),
+                        nn.LeakyReLU(),
+                        nn.Dropout(self.dropout_rate) if self.dropout_rate > 0 else nn.Identity(),
+                        nn.Linear(self.hidden_dim, self.input_dim)
+                    ),
+                    Rearrange('b np pd -> b pd np'),
+                    nn.Fold(
+                        output_size=(self.height, self.width), 
+                        kernel_size=self.patch_size, 
+                        stride=self.patch_size
+                    )
+                )
+                for _ in range(len(args.get('future_delay_list', [0])))
+            ])        
 
     def patchify(self, x):
         """Convert frames to patches with embeddings"""
@@ -295,11 +334,22 @@ class MambaMultiPredictor(nn.Module):
         # Reconstruct each future prediction with its own head
         preds = []
         #for i, head in enumerate(self.reconstruction_heads):
-        for i in range(self.num_future_preds):
-            head = self.reconstruction_heads[i]
-            pred_frame = head(pred_seq[i])  # [B, num_patches, input_dim]
+        if self.pos_neg_reconstruction:
+            for i in range(self.num_future_preds):
+                pos_head = self.pos_reconstruction_heads[i]
+                neg_head = self.neg_reconstruction_heads[i]
+                pos_pred_frame = pos_head(pred_seq[i])
+                neg_pred_frame = neg_head(pred_seq[i])
 
-            preds.append(pred_frame)
+                pred_frame = pos_pred_frame - neg_pred_frame  # Combine positive and negative reconstructions
+
+                preds.append(pred_frame)
+        else:
+            for i in range(self.num_future_preds):
+                head = self.reconstruction_heads[i]
+                pred_frame = head(pred_seq[i])  # [B, num_patches, input_dim]
+
+                preds.append(pred_frame)
         
         preds = torch.stack(preds, dim=1)  # [B, num_future_preds, C, H, W]
         #print(f"Predictions shape before residual: {preds.shape}")

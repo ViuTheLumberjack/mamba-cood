@@ -59,11 +59,6 @@ class IntermediateHistoricalFusionDataset(basedataset.BaseDataset):
         self.intermediate_preds = params['delay'].get('future_delay_list', False) if not self.extract else []
         self.max_delay = max(self.intermediate_preds) if len(self.intermediate_preds) > 0 else 0
         self.len_past = int(params['len_past'])
-
-        if self.train:
-            root_dir = params['root_dir']
-        else:
-            root_dir = params['validate_dir']
         
         # Update the length of the records to take into account the past and intermediate predictions
         self.valid_indices = []

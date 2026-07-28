@@ -53,7 +53,7 @@ def test_parser():
     parser.add_argument('--split_dataset', type=str, default='validate')  #validate, test
     parser.add_argument('--freeze_heads', type=bool, default=False) 
     parser.add_argument('--name_output_result', type=str, default='prova')  #validate, test
-    parser.add_argument('--len_past', type=int, default=2)  #validate, test
+    parser.add_argument('--len_past', type=int, default=4)  #validate, test
     parser.add_argument('--delay', type=int, default=None)
 
     #wo_backbone: jump the backbone part that generate the feature map and read it from the disk, saved previously
@@ -71,7 +71,10 @@ def main():
                                                     'the results in single ' \
                                                     'image mode or video mode'
 
-    hypes = yaml_utils.load_yaml(None, opt)
+    if opt.name_yaml is None:
+        hypes = yaml_utils.load_yaml(None, opt)
+    else:
+        hypes = yaml_utils.load_yaml(opt.name_yaml, None)
 
     print(opt)
 

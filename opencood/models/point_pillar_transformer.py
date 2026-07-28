@@ -149,7 +149,7 @@ class PointPillarTransformer(nn.Module):
                 feature_saved_unsqueezed = einops.repeat(feature_saved, 'b c h w -> b t c h w', t=T)
                 predictions = torch.where(ego_mat, predictions, feature_saved_unsqueezed)         
         else:
-            compensated_features = feature_saved
+            feature_encoded = feature_saved
             predictions = feature_saved.unsqueeze(1)
 
         spatial_features_2d = self.naive_compressor.decoder(feature_encoded)
