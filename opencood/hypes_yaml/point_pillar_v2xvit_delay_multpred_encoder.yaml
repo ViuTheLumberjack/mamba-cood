@@ -24,7 +24,7 @@ delay:
 
 yaml_parser: "load_point_pillar_params"
 train_params:
-  batch_size: &batch_size 1
+  batch_size: &batch_size 5
   epoches: &epoches 60
   eval_freq: 1
   save_freq: 1
@@ -174,7 +174,7 @@ model:
         use_bidirectional: False
         dropout: 0.1
         residual: False
-        sincos: True
+        sincos: False
         factored_embeddings: True
         factored_temporal_encoding: True
         npt_order: True

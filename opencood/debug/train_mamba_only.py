@@ -209,7 +209,7 @@ def main():
         
     opencood_validate_dataset = build_dataset(hypes, visualize=False, train=False)
     train_loader = DataLoader(opencood_train_dataset,
-                                batch_size=1,
+                                batch_size=hypes['train_params']['batch_size'],
                                 num_workers=num_workers,   #8
                                 collate_fn=opencood_train_dataset_og.collate_batch_train,
                                 shuffle=True,
